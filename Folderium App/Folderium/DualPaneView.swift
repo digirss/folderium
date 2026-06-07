@@ -182,8 +182,14 @@ struct DualPaneView: View {
         saveToolbarColumnsLayout(defaultToolbarLayout)
     }
     
-    private var recentLocations: [QuickLocation] {
-        let merged = (leftBackHistory + rightBackHistory + leftForwardHistory + rightForwardHistory).reversed()
+    private func recentLocations(for pane: ActivePane) -> [QuickLocation] {
+        let merged: [URL]
+        switch pane {
+        case .left:
+            merged = (leftBackHistory + leftForwardHistory).reversed()
+        case .right:
+            merged = (rightBackHistory + rightForwardHistory).reversed()
+        }
         var seen = Set<String>()
         var result: [QuickLocation] = []
         
@@ -282,48 +288,29 @@ struct DualPaneView: View {
             
             GeometryReader { geometry in
                 let totalWidth = max(geometry.size.width, 500)
-                let clampedSidebarWidth = min(max(quickAccessWidth, 150), totalWidth * 0.45)
-                let sidebarWidth = showNavigationPane ? clampedSidebarWidth : 0
-                let sidebarSplitterWidth: CGFloat = showNavigationPane ? 6 : 0
                 let paneSplitterWidth: CGFloat = isSinglePaneMode ? 0 : 6
-                let remainingWidth = max(totalWidth - sidebarWidth - sidebarSplitterWidth - paneSplitterWidth, 300)
+                let remainingWidth = max(totalWidth - paneSplitterWidth, 300)
                 let clampedPaneSplit = min(max(paneSplitRatio, 0.2), 0.8)
                 let minPaneWidth: CGFloat = 150
                 let leftPaneWidth = min(max(remainingWidth * clampedPaneSplit, minPaneWidth), remainingWidth - minPaneWidth)
                 let rightPaneWidth = remainingWidth - leftPaneWidth
+                let leftSidebarWidth = min(max(quickAccessWidth, 150), leftPaneWidth * 0.45)
+                let rightSidebarWidth = min(max(quickAccessWidth, 150), rightPaneWidth * 0.45)
                 
                 HStack(spacing: 0) {
-                    if showNavigationPane {
-                        quickAccessSidebar
-                            .frame(width: clampedSidebarWidth)
-                        
-                        Rectangle()
-                            .fill(FolderiumTheme.separator(isSoftDark: softDarkThemeEnabled))
-                            .frame(width: 6)
-                            .contentShape(Rectangle())
-                            .gesture(
-                                DragGesture(minimumDistance: 2)
-                                    .onChanged { value in
-                                        if sidebarDragStartWidth == nil {
-                                            sidebarDragStartWidth = clampedSidebarWidth
-                                        }
-                                        let base = sidebarDragStartWidth ?? clampedSidebarWidth
-                                        let proposed = base + value.translation.width
-                                        quickAccessWidth = min(max(proposed, 150), totalWidth * 0.45)
-                                    }
-                                    .onEnded { _ in
-                                        sidebarDragStartWidth = nil
-                                    }
-                            )
-                            .onTapGesture(count: 2) {
-                                withAnimation(.easeInOut(duration: 0.15)) {
-                                    quickAccessWidth = defaultQuickAccessWidth
-                                }
-                            }
-                    }
-                    
                     if !isSinglePaneMode || activePane == .left {
-                        VStack(spacing: 0) {
+                        HStack(spacing: 0) {
+                            if showNavigationPane {
+                                quickAccessSidebar(for: .left)
+                                    .frame(width: leftSidebarWidth)
+                                
+                                quickAccessSplitter(
+                                    columnWidth: isSinglePaneMode ? remainingWidth : leftPaneWidth,
+                                    clampedSidebarWidth: leftSidebarWidth
+                                )
+                            }
+                            
+                            VStack(spacing: 0) {
                             FilePaneView(
                                 path: $leftPath,
                                 selection: $leftSelection,
@@ -365,6 +352,8 @@ struct DualPaneView: View {
                                 leftCurrentPathRaw = newValue.path
                             }
                             
+                            }
+                            .frame(maxWidth: .infinity)
                         }
                         .id("left-pane-\(paneLayoutEpoch)")
                         .frame(width: isSinglePaneMode ? remainingWidth : leftPaneWidth, alignment: .leading)
@@ -400,7 +389,18 @@ struct DualPaneView: View {
                     }
                     
                     if !isSinglePaneMode || activePane == .right {
-                        VStack(spacing: 0) {
+                        HStack(spacing: 0) {
+                            if showNavigationPane {
+                                quickAccessSidebar(for: .right)
+                                    .frame(width: rightSidebarWidth)
+                                
+                                quickAccessSplitter(
+                                    columnWidth: isSinglePaneMode ? remainingWidth : rightPaneWidth,
+                                    clampedSidebarWidth: rightSidebarWidth
+                                )
+                            }
+                            
+                            VStack(spacing: 0) {
                             FilePaneView(
                                 path: $rightPath,
                                 selection: $rightSelection,
@@ -442,6 +442,8 @@ struct DualPaneView: View {
                                 rightCurrentPathRaw = newValue.path
                             }
                             
+                            }
+                            .frame(maxWidth: .infinity)
                         }
                         .id("right-pane-\(paneLayoutEpoch)")
                         .frame(width: isSinglePaneMode ? remainingWidth : rightPaneWidth, alignment: .leading)
@@ -524,19 +526,54 @@ struct DualPaneView: View {
     }
     
     @ViewBuilder
-    private var quickAccessSidebar: some View {
+    private func quickAccessSplitter(columnWidth: CGFloat, clampedSidebarWidth: CGFloat) -> some View {
+        Rectangle()
+            .fill(FolderiumTheme.separator(isSoftDark: softDarkThemeEnabled))
+            .frame(width: 6)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 2)
+                    .onChanged { value in
+                        if sidebarDragStartWidth == nil {
+                            sidebarDragStartWidth = clampedSidebarWidth
+                        }
+                        let base = sidebarDragStartWidth ?? clampedSidebarWidth
+                        let proposed = base + value.translation.width
+                        quickAccessWidth = min(max(proposed, 150), columnWidth * 0.45)
+                    }
+                    .onEnded { _ in
+                        sidebarDragStartWidth = nil
+                    }
+            )
+            .onTapGesture(count: 2) {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    quickAccessWidth = defaultQuickAccessWidth
+                }
+            }
+    }
+    
+    @ViewBuilder
+    private func quickAccessSidebar(for pane: ActivePane) -> some View {
+        let paneRecentLocations = recentLocations(for: pane)
+        let paneTitle = pane == .left ? "Left" : "Right"
+        
         VStack(alignment: .leading, spacing: 0) {
-            Text("Quick Access")
-                .font(.headline)
-                .padding(.horizontal, 12)
-                .padding(.top, 10)
-                .padding(.bottom, 6)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Quick Access")
+                    .font(.headline)
+                Text(paneTitle)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
+            .padding(.bottom, 6)
             
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(quickLocations) { location in
                         Button {
-                            navigateToLocation(location.url)
+                            navigateToLocation(location.url, in: pane)
                         } label: {
                             HStack(spacing: 8) {
                                 Image(systemName: location.icon)
@@ -554,16 +591,16 @@ struct DualPaneView: View {
                     
                     Divider().padding(.vertical, 6)
                     
-                    if !recentLocations.isEmpty {
+                    if !paneRecentLocations.isEmpty {
                         Text("Recent")
                             .font(.caption)
                             .foregroundColor(.secondary)
                             .padding(.horizontal, 10)
                             .padding(.bottom, 4)
                         
-                        ForEach(recentLocations) { location in
+                        ForEach(paneRecentLocations) { location in
                             Button {
-                                navigateToLocation(location.url)
+                                navigateToLocation(location.url, in: pane)
                             } label: {
                                 HStack(spacing: 8) {
                                     Image(systemName: location.icon)
@@ -591,7 +628,7 @@ struct DualPaneView: View {
                         
                         ForEach(pinnedLocations, id: \.url.path) { location in
                             Button {
-                                navigateToLocation(location.url)
+                                navigateToLocation(location.url, in: pane)
                             } label: {
                                 HStack(spacing: 8) {
                                     Image(systemName: location.icon)
@@ -634,7 +671,7 @@ struct DualPaneView: View {
                         ForEach(mountedVolumes) { location in
                             HStack(spacing: 8) {
                                 Button {
-                                    navigateToLocation(location.url)
+                                    navigateToLocation(location.url, in: pane)
                                 } label: {
                                     HStack(spacing: 8) {
                                         Image(systemName: location.icon)
@@ -664,7 +701,7 @@ struct DualPaneView: View {
                     }
                     
                     Button {
-                        pinActiveFolder()
+                        pinActiveFolder(in: pane)
                     } label: {
                         HStack(spacing: 8) {
                             Image(systemName: "pin")
@@ -679,7 +716,7 @@ struct DualPaneView: View {
                     .buttonStyle(.plain)
                     
                     Button {
-                        selectFolder(for: activePane)
+                        selectFolder(for: pane)
                     } label: {
                         HStack(spacing: 8) {
                             Image(systemName: "folder.badge.plus")
@@ -851,8 +888,8 @@ struct DualPaneView: View {
         }
     }
     
-    private func navigateToLocation(_ url: URL) {
-        switch activePane {
+    private func navigateToLocation(_ url: URL, in pane: ActivePane) {
+        switch pane {
         case .left:
             leftPath = url
         case .right:
@@ -860,8 +897,8 @@ struct DualPaneView: View {
         }
     }
     
-    private func pinActiveFolder() {
-        let current = (activePane == .left ? leftPath : rightPath).path
+    private func pinActiveFolder(in pane: ActivePane) {
+        let current = (pane == .left ? leftPath : rightPath).path
         guard !current.isEmpty else { return }
         if !pinnedPaths.contains(current) {
             pinnedPaths.append(current)
