@@ -120,3 +120,7 @@ Temporary Items
 # App-specific
 *.log
 *.tmp
+
+# DMG build artifacts (website keeps a symlink for downloads)
+*.dmg
+!Folderium Website/*.dmg

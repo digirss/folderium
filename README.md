@@ -32,7 +32,7 @@ It focuses on fast local file operations with a dual-pane workflow and zero tele
 
 ```bash
 git clone https://github.com/yourusername/folderium.git
-cd folderium
+cd folderium/Folderium\ App
 open Folderium.xcodeproj
 ```
 
@@ -41,6 +41,7 @@ Then run in Xcode with `Cmd + R`.
 ## Build From CLI
 
 ```bash
+cd "Folderium App"
 xcodebuild -project Folderium.xcodeproj -scheme Folderium -configuration Debug build
 ```
 
@@ -49,12 +50,14 @@ xcodebuild -project Folderium.xcodeproj -scheme Folderium -configuration Debug b
 - Verify project/build health:
 
   ```bash
+  cd "Folderium App"
   ./scripts/verify_build.sh
   ```
 
 - Build distributable DMG:
 
   ```bash
+  cd "Folderium App"
   ./scripts/build_dmg.sh
   ```
 
@@ -62,16 +65,21 @@ xcodebuild -project Folderium.xcodeproj -scheme Folderium -configuration Debug b
 
 ```text
 folderium/
-├── Folderium/
-│   ├── FolderiumApp.swift
-│   ├── ContentView.swift
-│   ├── DualPaneView.swift
-│   └── Managers/
-│       ├── FileManager.swift
-│       ├── ArchiveManager.swift
-│       ├── SearchManager.swift
-│       └── TerminalManager.swift
-├── scripts/
+├── Folderium App/
+│   ├── Folderium/
+│   │   ├── FolderiumApp.swift
+│   │   ├── ContentView.swift
+│   │   ├── DualPaneView.swift
+│   │   └── Managers/
+│   │       ├── FileManager.swift
+│   │       ├── ArchiveManager.swift
+│   │       ├── SearchManager.swift
+│   │       └── TerminalManager.swift
+│   ├── Folderium.xcodeproj
+│   ├── scripts/
+│   └── folderium.svg
+├── Folderium Website/
+│   └── Folderium-1.0.0.dmg  (symlink → ../Folderium App/Folderium-1.0.0.dmg)
 ├── .github/workflows/build.yml
 ├── README.md
 └── CONTRIBUTING.md

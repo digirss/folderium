@@ -72,5 +72,11 @@ hdiutil verify "$DMG_NAME"
 echo -e "${GREEN}🎉 DMG created successfully: $DMG_NAME${NC}"
 echo -e "${GREEN}📊 DMG size: $(du -h "$DMG_NAME" | cut -f1)${NC}"
 
+# Keep website download link in sync
+WEBSITE_DMG_LINK="../Folderium Website/$DMG_NAME"
+rm -f "$WEBSITE_DMG_LINK"
+ln -sf "../Folderium App/$DMG_NAME" "$WEBSITE_DMG_LINK"
+echo -e "${GREEN}🔗 Website download link updated: $WEBSITE_DMG_LINK${NC}"
+
 # Open the DMG in Finder
 open -R "$DMG_NAME"

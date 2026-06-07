@@ -24,7 +24,7 @@ Thanks for contributing to Folderium. This guide explains how to propose changes
 
 ```bash
 git clone https://github.com/yourusername/folderium.git
-cd folderium
+cd folderium/Folderium\ App
 open Folderium.xcodeproj
 ```
 
@@ -33,12 +33,14 @@ Then run with `Cmd + R` in Xcode.
 ### Optional CLI Build
 
 ```bash
+cd "Folderium App"
 xcodebuild -project Folderium.xcodeproj -scheme Folderium -configuration Debug build
 ```
 
 ### Project Verification Script
 
 ```bash
+cd "Folderium App"
 ./scripts/verify_build.sh
 ```
 
@@ -69,8 +71,8 @@ xcodebuild -project Folderium.xcodeproj -scheme Folderium -configuration Debug b
 
 ### Project Structure
 
-- UI and interaction flow primarily live under `Folderium/`.
-- Domain logic lives in `Folderium/Managers/`.
+- UI and interaction flow primarily live under `Folderium App/Folderium/`.
+- Domain logic lives in `Folderium App/Folderium/Managers/`.
 - Keep new code in the closest existing module unless a new module is justified.
 
 ## Testing Expectations
