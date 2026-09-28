@@ -1128,60 +1128,59 @@ struct DualPaneView: View {
                     // Determine target directory (explicit destination or active pane)
                     let targetDirectory = destinationOverride ?? (activePane == .left ? leftPath : rightPath)
                     
-                    print("Pasting \(urls.count) files to \(targetDirectory.path)")
-                    
-                    Task {
-                        do {
-                            var movedPairs: [(from: URL, to: URL)] = []
-                            for url in urls {
-                                let destinationURL = targetDirectory.appendingPathComponent(url.lastPathComponent)
-                                let finalDestinationURL = resolveConflictDestination(
-                                    sourceURL: url,
-                                    destinationURL: destinationURL,
-                                    in: targetDirectory
-                                )
-                                guard let finalDestinationURL else { continue }
-                                
-                                if isCutOperation {
-                                    // Move file
+                    if isCutOperation {
+                        // 移動維持即時操作(非傳輸佇列範圍)
+                        print("Pasting \(urls.count) files to \(targetDirectory.path)")
+                        
+                        Task {
+                            do {
+                                var movedPairs: [(from: URL, to: URL)] = []
+                                for url in urls {
+                                    let destinationURL = targetDirectory.appendingPathComponent(url.lastPathComponent)
+                                    let finalDestinationURL = resolveConflictDestination(
+                                        sourceURL: url,
+                                        destinationURL: destinationURL,
+                                        in: targetDirectory
+                                    )
+                                    guard let finalDestinationURL else { continue }
+                                    
                                     try FileManager.default.moveItem(at: url, to: finalDestinationURL)
                                     movedPairs.append((from: url, to: finalDestinationURL))
                                     print("Moved: \(url.lastPathComponent) to \(finalDestinationURL.lastPathComponent)")
-                                } else {
-                                    // Copy file
-                                    try FileManager.default.copyItem(at: url, to: finalDestinationURL)
-                                    print("Copied: \(url.lastPathComponent) to \(finalDestinationURL.lastPathComponent)")
-                                }
-                            }
-                            
-                            await MainActor.run {
-                                // Refresh both panes
-                                refreshTrigger = UUID()
-                                if isCutOperation, !movedPairs.isEmpty {
-                                    recordMovedItemsBatch(title: "Move via Paste", pairs: movedPairs)
                                 }
                                 
-                                // Reset cut operation after paste
-                                isCutOperation = false
+                                await MainActor.run {
+                                    // Refresh both panes
+                                    refreshTrigger = UUID()
+                                    if !movedPairs.isEmpty {
+                                        recordMovedItemsBatch(title: "Move via Paste", pairs: movedPairs)
+                                    }
+                                    
+                                    // Reset cut operation after paste
+                                    isCutOperation = false
+                                }
+                                
+                                print("Paste operation completed successfully")
+                            } catch {
+                                print("Error pasting files: \(error)")
                             }
-                            
-                            print("Paste operation completed successfully")
-                        } catch {
-                            print("Error pasting files: \(error)")
                         }
+                    } else {
+                        // 複製一律走 TransferQueue(PRD §3.1:所有複製入口同一佇列)
+                        enqueueCopyBatch(sources: urls, destination: targetDirectory)
+                        isCutOperation = false
                     }
                 } else {
                     print("No files found in clipboard")
                 }
             } else {
                 print("No file URLs found in clipboard")
-                
-                // Try to read as file paths as fallback
-                if let filePaths = pasteboard.string(forType: .string) {
-                    print("Found file paths in clipboard: \(filePaths)")
-                    // This is a fallback - we could implement file path parsing here
-                }
             }
+        }
+        
+        /// 複製一律走 TransferQueue(與拖放同入口;策略由 bridge 統一)
+        private func enqueueCopyBatch(sources: [URL], destination: URL) {
+            TransferQueueBridge.shared.enqueueCopy(sources: sources, destination: destination)
         }
         
         private func hasFilesInClipboard() -> Bool {
@@ -3093,6 +3092,14 @@ struct FilePaneView: View {
         print("Performing \(operation == .move ? "move" : "copy") operation with \(sourceURLs.count) files to \(destinationFolder.path)")
         
         Task {
+            // 複製一律走 TransferQueue(PRD §3.1:同一佇列;資料夾拖到資料夾列 = 該子目錄)
+            if operation == .copy {
+                await MainActor.run {
+                    TransferQueueBridge.shared.enqueueCopy(sources: sourceURLs, destination: destinationFolder)
+                }
+                return
+            }
+            
             do {
                 var movedPairs: [(from: URL, to: URL)] = []
                 for sourceURL in sourceURLs {
@@ -3115,22 +3122,16 @@ struct FilePaneView: View {
                         continue
                     }
                     
-                    switch operation {
-                    case .move:
-                        try FileManager.default.moveItem(at: sourceURL, to: finalDestinationURL)
-                        movedPairs.append((from: sourceURL, to: finalDestinationURL))
-                        print("Moved: \(sourceURL.lastPathComponent) to \(finalDestinationURL.lastPathComponent)")
-                    case .copy:
-                        try FileManager.default.copyItem(at: sourceURL, to: finalDestinationURL)
-                        print("Copied: \(sourceURL.lastPathComponent) to \(finalDestinationURL.lastPathComponent)")
-                    }
+                    try FileManager.default.moveItem(at: sourceURL, to: finalDestinationURL)
+                    movedPairs.append((from: sourceURL, to: finalDestinationURL))
+                    print("Moved: \(sourceURL.lastPathComponent) to \(finalDestinationURL.lastPathComponent)")
                 }
                 
                 await MainActor.run {
                     // Refresh the file list
                     loadFiles()
                     onRefresh()
-                    if operation == .move, !movedPairs.isEmpty {
+                    if !movedPairs.isEmpty {
                         onRecordMoveBatch("Move via Drag and Drop", movedPairs)
                     }
                 }

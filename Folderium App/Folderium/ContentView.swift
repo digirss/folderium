@@ -36,6 +36,9 @@ struct ContentView: View {
                 }
                 .buttonStyle(.bordered)
 
+                ConflictStrategyPicker()
+                    .buttonStyle(.bordered)
+
                 Spacer()
             }
             .padding(.horizontal, 12)
@@ -106,6 +109,9 @@ struct ContentView: View {
                     }
                 }
             }
+
+            // 底部傳輸進度抽屜(PRD §3.6)
+            TransferDrawerView()
         }
         .onAppear {
             previewSelection = selectedFiles

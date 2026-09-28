@@ -302,6 +302,34 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     
+    /// PRD §4.4:傳輸中結束 App 時先提示並保存佇列,確認終止後再結束;
+    /// 正常停止無法確認時不假報已停止,也不自動強制終止。
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let queue = TransferQueue.shared
+        let transferring = queue.batches.contains { $0.state == .running || $0.state == .stopping }
+        if !transferring {
+            _ = queue.prepareForAppExit()
+            return .terminateNow
+        }
+        let alert = NSAlert()
+        alert.messageText = "有傳輸正在進行"
+        alert.informativeText = "結束前會先保存佇列並請求引擎正常停止。\n未完成的批次下次啟動後可繼續。"
+        alert.addButton(withTitle: "結束並停止傳輸")
+        alert.addButton(withTitle: "取消")
+        let response = alert.runModal()
+        guard response == .alertFirstButtonReturn else { return .terminateCancel }
+        let confirmed = queue.prepareForAppExit()
+        if !confirmed {
+            let warn = NSAlert()
+            warn.messageText = "無法確認引擎已停止"
+            warn.informativeText = "佇列已保存。引擎狀態待確認;下次啟動時會先檢查前次引擎。"
+            warn.addButton(withTitle: "仍要結束")
+            warn.addButton(withTitle: "取消")
+            if warn.runModal() != .alertFirstButtonReturn { return .terminateCancel }
+        }
+        return .terminateNow
+    }
+    
     private func maximizeInitialWindow() {
         guard let window = NSApp.windows.first else { return }
         guard let screen = NSScreen.main else { return }
