@@ -38,6 +38,11 @@ struct QuickLocation: Identifiable {
 }
 
 struct DualPaneView: View {
+    // Identifiable request so repeated Enter presses retrigger inline rename.
+    struct InlineRenameRequest: Equatable {
+        let id: UUID
+        let url: URL
+    }
     private let defaultQuickAccessWidth: CGFloat = 190
     private let defaultPaneSplitRatio: CGFloat = 0.5
     @AppStorage("folderium.pinnedPaths") private var pinnedPathsRaw: String = ""
@@ -112,6 +117,8 @@ struct DualPaneView: View {
     @State private var undoStack: [FileMoveBatch] = []
     @State private var redoStack: [FileMoveBatch] = []
     @State private var paneLayoutEpoch: Int = 0
+    // Finder-like inline rename handoff: monitor fires -> state bump -> active pane begins editing.
+    @State private var inlineRenameRequest: InlineRenameRequest?
     let isSinglePaneMode: Bool
     
     private enum DeleteIntent {
@@ -800,6 +807,14 @@ struct DualPaneView: View {
                     },
                     onFocus: {
                         activePane = pane
+                    },
+                    onBeginInlineRename: { url in
+                        // Context menu / row-level rename requests from this pane.
+                        inlineRenameRequest = InlineRenameRequest(id: UUID(), url: url)
+                    },
+                    inlineRenameRequest: inlineRenameRequest.flatMap { request in
+                        // Only the pane whose URL belongs to it should react.
+                        request.url.path.hasPrefix(pathForPane(pane).path) ? request : nil
                     }
                 )
                 .frame(maxWidth: .infinity)
@@ -1426,40 +1441,10 @@ struct DualPaneView: View {
     private func renameSelectedItem() {
         let selection = activePaneSelection
         guard selection.count == 1, let selectedURL = selection.first else { return }
-        
-        let currentName = selectedURL.lastPathComponent
-        let alert = NSAlert()
-        alert.messageText = "Rename Item"
-        alert.informativeText = "Enter new name for '\(currentName)':"
-        
-        let textField = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
-        textField.stringValue = currentName
-        textField.selectText(nil)
-        alert.accessoryView = textField
-        alert.addButton(withTitle: "Rename")
-        alert.addButton(withTitle: "Cancel")
-        alert.alertStyle = .informational
-        
-        let response = alert.runModal()
-        guard response == .alertFirstButtonReturn else { return }
-        
-        let newName = textField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !newName.isEmpty, newName != currentName else { return }
-        
-        let newURL = selectedURL.deletingLastPathComponent().appendingPathComponent(newName)
-        do {
-            try FileManager.default.moveItem(at: selectedURL, to: newURL)
-            recordMovedItemsBatch(title: "Rename", pairs: [(from: selectedURL, to: newURL)])
-            refreshTrigger = UUID()
-            setSelectionInPane([newURL], for: activePane)
-        } catch {
-            let errorAlert = NSAlert()
-            errorAlert.messageText = "Rename Failed"
-            errorAlert.informativeText = error.localizedDescription
-            errorAlert.addButton(withTitle: "OK")
-            errorAlert.alertStyle = .warning
-            errorAlert.runModal()
-        }
+        // Finder-like: hand off to the active pane's inline rename editor
+        // (no modal dialog). Pane applies the rename and records undo.
+        setSelectionInPane([selectedURL], for: activePane)
+        inlineRenameRequest = InlineRenameRequest(id: UUID(), url: selectedURL)
     }
     
     private func copySelectedFiles() {
@@ -1984,6 +1969,8 @@ struct FilePaneView: View {
     let onRecordMoveBatch: (_ title: String, _ pairs: [(from: URL, to: URL)]) -> Void
     let onDisplayedURLsChange: ([URL]) -> Void
     let onFocus: () -> Void
+    var onBeginInlineRename: ((URL) -> Void)? = nil
+    var inlineRenameRequest: DualPaneView.InlineRenameRequest? = nil
     
     @State private var files: [FileItem] = []
     @State private var displayedFiles: [FileItem] = []
@@ -2198,6 +2185,11 @@ struct FilePaneView: View {
         }
         .onChange(of: columnLayoutRaw) { _, _ in
             loadColumnLayout()
+        }
+        .onChange(of: inlineRenameRequest) { oldValue, newValue in
+            // Global Enter key / parent view requests inline rename for a URL.
+            guard let request = newValue, request.id != oldValue?.id else { return }
+            beginInlineRename(for: request.url)
         }
         .onKeyPress(.downArrow) {
             moveSelectionByArrow(delta: 1)
@@ -2781,7 +2773,8 @@ struct FilePaneView: View {
                         selectedURLsProvider: {
                             Array(selection).sorted { $0.path < $1.path }
                         },
-                        onFocus: onFocus
+                        onFocus: onFocus,
+                        onBeginInlineRename: onBeginInlineRename
                     )
                 }
             }
@@ -3781,6 +3774,7 @@ struct FileRowView: View {
     let onDropToFolder: (URL?, [NSItemProvider]) -> Bool
     let selectedURLsProvider: () -> [URL]
     let onFocus: () -> Void
+    var onBeginInlineRename: ((URL) -> Void)? = nil
     private static let internalDragPrefix = "folderium-internal-drag-v1"
     
     private var backgroundColor: Color {
@@ -3844,7 +3838,10 @@ struct FileRowView: View {
                 onRecordMoveBatch: onRecordMoveBatch,
                 canPasteFromClipboard: canPasteFromClipboard,
                 onPasteIntoFolder: onPasteIntoFolder,
-                onBulkCompress: onBulkCompress
+                onBulkCompress: onBulkCompress,
+                onBeginInlineRename: { url in
+                    onBeginInlineRename?(url)
+                }
             )
         }
         .onDrag {
@@ -3863,7 +3860,27 @@ struct FileRowView: View {
             inlineRenameFieldFocused = newValue
             if newValue {
                 isNameTooltipVisible = false
+                selectBaseNameInInlineRenameField()
             }
+        }
+    }
+
+    /// Finder-like: when inline editing begins, select only the base name and
+    /// leave the extension unselected (dotfiles without an inner dot select all).
+    private func selectBaseNameInInlineRenameField() {
+        let nameText = inlineRenameText
+        let name = nameText as NSString
+        let ext = name.pathExtension
+        let selectedLength: Int
+        if ext.isEmpty || (nameText.hasPrefix(".") && !nameText.dropFirst().contains(".")) {
+            selectedLength = name.length
+        } else {
+            selectedLength = name.length - ext.count - 1
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+            guard let editor = NSApp.keyWindow?.firstResponder as? NSTextView,
+                  editor.string == nameText else { return }
+            editor.selectedRange = NSRange(location: 0, length: selectedLength)
         }
     }
     
@@ -4375,6 +4392,7 @@ struct FileContextMenu: View {
     let canPasteFromClipboard: Bool
     let onPasteIntoFolder: (URL) -> Void
     let onBulkCompress: () -> Void
+    var onBeginInlineRename: ((URL) -> Void)? = nil
     
     enum ActionType {
         case delete, moveToTrash
@@ -4468,7 +4486,9 @@ struct FileContextMenu: View {
             Divider()
             
             Button("Rename") {
-                renameFile()
+                onSelect()
+                // Finder-like: edit in place, no modal dialog.
+                onBeginInlineRename?(file.url)
             }
             
             Button("Delete") {
@@ -4746,54 +4766,6 @@ struct FileContextMenu: View {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(file.url.path, forType: .string)
-    }
-    
-    private func renameFile() {
-        // Get the current file name from the URL to avoid issues with stale FileItem
-        let currentFileName = file.url.lastPathComponent
-        
-        // Safety check
-        guard !currentFileName.isEmpty else {
-            print("Error: currentFileName is empty")
-            return
-        }
-        
-        // Show rename dialog
-        let alert = NSAlert()
-        alert.messageText = "Rename Item"
-        alert.informativeText = "Enter new name for '\(currentFileName)':"
-        
-        let textField = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
-        textField.stringValue = currentFileName
-        textField.selectText(nil)
-        
-        alert.accessoryView = textField
-        alert.addButton(withTitle: "Rename")
-        alert.addButton(withTitle: "Cancel")
-        alert.alertStyle = .informational
-        
-        let response = alert.runModal()
-        if response == .alertFirstButtonReturn {
-            let newName = textField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            
-            if !newName.isEmpty && newName != currentFileName {
-                let newURL = file.url.deletingLastPathComponent().appendingPathComponent(newName)
-                
-                do {
-                    try FileManager.default.moveItem(at: file.url, to: newURL)
-                    onRecordMoveBatch("Rename", [(from: file.url, to: newURL)])
-                    onFileOperation() // Refresh the file list
-                } catch {
-                    // Show error alert
-                    let errorAlert = NSAlert()
-                    errorAlert.messageText = "Rename Failed"
-                    errorAlert.informativeText = "Could not rename '\(currentFileName)' to '\(newName)': \(error.localizedDescription)"
-                    errorAlert.addButton(withTitle: "OK")
-                    errorAlert.alertStyle = .warning
-                    errorAlert.runModal()
-                }
-            }
-        }
     }
     
     private func moveToTrash() {

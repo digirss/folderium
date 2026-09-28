@@ -90,6 +90,7 @@ enum ShortcutStore {
             ShortcutBinding(action: .newWindow, combo: "cmd+n"),
             ShortcutBinding(action: .selectAllInActivePane, combo: "cmd+a"),
             ShortcutBinding(action: .newFolderInActivePane, combo: "cmd+shift+n"),
+            ShortcutBinding(action: .renameSelected, combo: "enter"),
             ShortcutBinding(action: .renameSelected, combo: "shift+f2"),
             ShortcutBinding(action: .copySelected, combo: "cmd+c"),
             ShortcutBinding(action: .cutSelected, combo: "cmd+x"),
@@ -165,6 +166,18 @@ enum ShortcutStore {
                 action: .previewSelected,
                 combo: previewComboTaken ? "cmd+y" : "space"
             ))
+        }
+
+        // v3 migration: Enter now triggers inline rename (Finder-like).
+        // Existing users get an enter binding added on top of their legacy combo;
+        // if enter is already taken by another enabled action, keep theirs.
+        if !migrated.contains(where: { $0.action == .renameSelected && ShortcutParser.normalizedCombo($0.combo) == "enter" }) {
+            let enterTaken = migrated.contains {
+                $0.isEnabled && $0.action != .renameSelected && ShortcutParser.normalizedCombo($0.combo) == "enter"
+            }
+            if !enterTaken {
+                migrated.append(ShortcutBinding(action: .renameSelected, combo: "enter"))
+            }
         }
 
         return migrated
