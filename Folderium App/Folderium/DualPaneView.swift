@@ -896,15 +896,15 @@ struct DualPaneView: View {
             }
         } label: {
             VStack(spacing: 6) {
-                Image(systemName: "sidebar.leading")
-                    .font(.system(size: 12))
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
                 Text("Quick")
                     .font(.system(size: 9))
                 Text("Access")
                     .font(.system(size: 9))
             }
             .foregroundColor(.secondary)
-            .frame(width: 22)
+            .frame(width: 28)
             .frame(maxHeight: .infinity)
             .contentShape(Rectangle())
         }
@@ -935,7 +935,7 @@ struct DualPaneView: View {
                         _ = hiddenQuickAccessPanes.insert(pane)
                     }
                 } label: {
-                    Image(systemName: "xmark")
+                    Image(systemName: "chevron.left")
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundColor(.secondary)
                         .frame(width: 18, height: 18)
@@ -1513,7 +1513,7 @@ struct DualPaneView: View {
         private func pasteFiles(destinationOverride: URL? = nil) {
             let pasteboard = NSPasteboard.general
             
-            print("Paste called - checking clipboard contents")
+
             
             // Check if there are file URLs in the clipboard
             if let fileURLs = pasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [NSURL] {

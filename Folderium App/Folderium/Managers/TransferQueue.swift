@@ -808,6 +808,10 @@ final class TransferQueue: ObservableObject {
         }
 
         // 成功:結算項目狀態
+        // 空目錄補建必須在結算之前:引擎不會回傳空目錄,若先結算再補建,
+        // 只含空目錄的項目會被誤判「引擎成功但目的地未出現此項目」→ failed。
+        createMissingEmptyDirs(batch: batches[i])
+
         let batch = batches[i]
         var results = BatchResults()
         results.unsupported = batch.items.filter { $0.itemState == .unsupported }.count
@@ -859,9 +863,6 @@ final class TransferQueue: ObservableObject {
         batches[i].results = results
         batches[i].runtimeJobID = nil
         batches[i].runtimeJobGroup = nil
-
-        // 空目錄補建(RC CreateEmptySrcDirs 實測不生效,App 自行建立)
-        createMissingEmptyDirs(batch: batches[i])
 
         if results.failed > 0 {
             batches[i].state = .needsAttention
