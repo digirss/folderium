@@ -1,6 +1,7 @@
 import SwiftUI
 import Darwin
 import UniformTypeIdentifiers
+import Quartz
 
 enum ActivePane {
     case left, right
@@ -371,9 +372,10 @@ struct DualPaneView: View {
                                 }
                             )
                             .frame(maxWidth: .infinity)
-                            .onChange(of: leftSelection) { _, _ in
-                                onSelectionChange?(leftSelection)
-                            }
+        .onChange(of: leftSelection) { _, _ in
+            onSelectionChange?(leftSelection)
+            QuickLookCoordinator.shared.refresh(urls: leftSelection.sorted { $0.path < $1.path })
+        }
                             .onChange(of: leftPath) { oldValue, newValue in
                                 recordHistoryIfNeeded(for: .left, oldValue: oldValue, newValue: newValue)
                                 leftCurrentPathRaw = newValue.path
@@ -463,9 +465,10 @@ struct DualPaneView: View {
                                 }
                             )
                             .frame(maxWidth: .infinity)
-                            .onChange(of: rightSelection) { _, _ in
-                                onSelectionChange?(rightSelection)
-                            }
+        .onChange(of: rightSelection) { _, _ in
+            onSelectionChange?(rightSelection)
+            QuickLookCoordinator.shared.refresh(urls: rightSelection.sorted { $0.path < $1.path })
+        }
                             .onChange(of: rightPath) { oldValue, newValue in
                                 recordHistoryIfNeeded(for: .right, oldValue: oldValue, newValue: newValue)
                                 rightCurrentPathRaw = newValue.path
@@ -1567,6 +1570,8 @@ struct DualPaneView: View {
             redoLastOperation()
         case .compressSelected:
             compressSelectedFiles()
+        case .previewSelected:
+            previewSelectedWithQuickLook()
         case .refreshActivePane:
             refreshTrigger = UUID()
         case .openTerminalActivePane:
@@ -1603,6 +1608,13 @@ struct DualPaneView: View {
             rightSelection = selected
             onSelectionChange?(rightSelection)
         }
+    }
+    
+    /// Space key: Finder-style Quick Look of the active pane's selection.
+    private func previewSelectedWithQuickLook() {
+        let urls = activePaneSelection
+            .sorted { $0.path < $1.path }
+        QuickLookCoordinator.shared.toggle(urls: urls, parentWindow: hostingWindow)
     }
     
     private func createNewFolderInActivePane() {
@@ -4567,6 +4579,84 @@ struct WindowAccessor: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {
         DispatchQueue.main.async {
             self.window = nsView.window
+        }
+    }
+}
+
+// MARK: - Quick Look (Space) Preview Coordinator
+
+/// Finder-style Quick Look panel driven by the active pane's selection.
+/// NSWindowDelegate conformance dismisses the panel on window close.
+final class QuickLookCoordinator: NSObject, QLPreviewPanelDataSource, QLPreviewPanelDelegate, NSWindowDelegate {
+    static let shared = QuickLookCoordinator()
+
+    private(set) var previewURLs: [URL] = []
+    private var panel: QLPreviewPanel?
+
+    func toggle(urls: [URL], parentWindow: NSWindow?) {
+        guard !urls.isEmpty else { return }
+        if let panel, panel.isVisible {
+            panel.orderOut(nil)
+            return
+        }
+        previewURLs = urls
+        if let panel {
+            panel.reloadData()
+            panel.makeKeyAndOrderFront(nil)
+        } else if let shared = QLPreviewPanel.shared() {
+            panel = shared
+            shared.dataSource = self
+            shared.delegate = self
+            shared.reloadData()
+            shared.makeKeyAndOrderFront(nil)
+        }
+        if let parentWindow {
+            parentWindow.delegate = self
+        }
+    }
+
+    func refresh(urls: [URL]) {
+        guard let panel, panel.isVisible else {
+            previewURLs = urls
+            return
+        }
+        let previousURL = previewURLs.isEmpty ? nil : previewURLs[panel.currentPreviewItemIndex]
+        previewURLs = urls
+        panel.reloadData()
+        if let previousURL,
+           let index = urls.firstIndex(of: previousURL),
+           index != panel.currentPreviewItemIndex {
+            panel.currentPreviewItemIndex = index
+        }
+    }
+
+    // MARK: QLPreviewPanelDataSource
+
+    func numberOfPreviewItems(in panel: QLPreviewPanel) -> Int {
+        previewURLs.count
+    }
+
+    func previewPanel(_ panel: QLPreviewPanel, previewItemAt index: Int) -> QLPreviewItem {
+        let url = previewURLs[index]
+        return url as NSURL
+    }
+
+    // MARK: QLPreviewPanelDelegate / NSWindowDelegate
+
+    /// Pressing Space again while the panel is key must close it (Finder behavior).
+    func previewPanel(_ panel: QLPreviewPanel, handle event: NSEvent) -> Bool {
+        if event.type == .keyDown,
+           event.keyCode == 49,
+           event.modifierFlags.intersection(.deviceIndependentFlagsMask).intersection([.command, .option, .control, .shift]).isEmpty {
+            panel.orderOut(nil)
+            return true
+        }
+        return false
+    }
+
+    func windowDidClose(_ notification: Notification) {
+        if let panel, panel.isVisible {
+            panel.orderOut(nil)
         }
     }
 }

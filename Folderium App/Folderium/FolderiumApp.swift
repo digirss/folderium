@@ -42,6 +42,7 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
     case undoLastOperation
     case redoLastOperation
     case compressSelected
+    case previewSelected
     case refreshActivePane
     case openTerminalActivePane
     case navigateBackActivePane
@@ -64,6 +65,7 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
         case .undoLastOperation: return "Undo Last File Operation"
         case .redoLastOperation: return "Redo Last File Operation"
         case .compressSelected: return "Compress Selection"
+        case .previewSelected: return "Quick Look Selected Item (Space)"
         case .refreshActivePane: return "Refresh Active Pane"
         case .openTerminalActivePane: return "Open Active Pane in Terminal"
         case .navigateBackActivePane: return "Navigate Back (Active Pane)"
@@ -96,7 +98,8 @@ enum ShortcutStore {
             ShortcutBinding(action: .deleteSelectedPermanently, combo: "shift+delete"),
             ShortcutBinding(action: .undoLastOperation, combo: "cmd+z"),
             ShortcutBinding(action: .redoLastOperation, combo: "cmd+shift+z"),
-            ShortcutBinding(action: .compressSelected, combo: "space"),
+            ShortcutBinding(action: .compressSelected, combo: "cmd+shift+c"),
+            ShortcutBinding(action: .previewSelected, combo: "space"),
             ShortcutBinding(action: .refreshActivePane, combo: "cmd+r"),
             ShortcutBinding(action: .openTerminalActivePane, combo: "cmd+t"),
             ShortcutBinding(action: .navigateBackActivePane, combo: "cmd+["),
@@ -144,6 +147,24 @@ enum ShortcutStore {
         }
         if !migrated.contains(where: { $0.action == .redoLastOperation }) {
             migrated.append(ShortcutBinding(action: .redoLastOperation, combo: "cmd+shift+z"))
+        }
+
+        // v2 migration: space moved from Compress to Quick Look preview.
+        // Existing users whose saved bindings still map space -> compress get the
+        // compress entry rebound to cmd+shift+c and a preview entry added.
+        if let compressIndex = migrated.firstIndex(where: {
+            $0.action == .compressSelected && ShortcutParser.normalizedCombo($0.combo) == "space"
+        }) {
+            migrated[compressIndex].combo = "cmd+shift+c"
+        }
+        if !migrated.contains(where: { $0.action == .previewSelected }) {
+            let previewComboTaken = migrated.contains {
+                $0.isEnabled && ShortcutParser.normalizedCombo($0.combo) == "space"
+            }
+            migrated.append(ShortcutBinding(
+                action: .previewSelected,
+                combo: previewComboTaken ? "cmd+y" : "space"
+            ))
         }
 
         return migrated
@@ -233,6 +254,7 @@ enum ShortcutParser {
         case 125: return "down"
         case 126: return "up"
         case 48: return "tab"
+        case 49: return "space"
         case 51: return "delete"
         case 36, 76: return "enter"
         case 53: return "esc"
