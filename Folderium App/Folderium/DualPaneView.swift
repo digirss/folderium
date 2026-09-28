@@ -3,8 +3,31 @@ import Darwin
 import UniformTypeIdentifiers
 import Quartz
 
-enum ActivePane {
-    case left, right
+enum ActivePane: String, CaseIterable {
+    case left, right, bottomLeft, bottomRight
+
+    var displayName: String {
+        switch self {
+        case .left: return "Left"
+        case .right: return "Right"
+        case .bottomLeft: return "Bottom Left"
+        case .bottomRight: return "Bottom Right"
+        }
+    }
+}
+
+/// 1 / 2 / 4 pane layout (PRD §3.1). `single` here is the internal layout;
+/// preview mode (`isSinglePaneMode`) also collapses to the active pane.
+enum PaneLayout: String, CaseIterable {
+    case single, dual, quad
+
+    var label: String {
+        switch self {
+        case .single: return "1"
+        case .dual: return "2"
+        case .quad: return "2×2"
+        }
+    }
 }
 
 struct QuickLocation: Identifiable {
@@ -20,6 +43,11 @@ struct DualPaneView: View {
     @AppStorage("folderium.pinnedPaths") private var pinnedPathsRaw: String = ""
     @AppStorage("folderium.leftCurrentPath") private var leftCurrentPathRaw: String = ""
     @AppStorage("folderium.rightCurrentPath") private var rightCurrentPathRaw: String = ""
+    @AppStorage("folderium.bottomLeftCurrentPath") private var bottomLeftCurrentPathRaw: String = ""
+    @AppStorage("folderium.bottomRightCurrentPath") private var bottomRightCurrentPathRaw: String = ""
+    // 1 / 2 / 2×2 pane layout (PRD §3.1)
+    @AppStorage("folderium.paneLayoutRaw") private var paneLayoutRaw: String = PaneLayout.dual.rawValue
+    @State private var paneLayout: PaneLayout = .dual
     @AppStorage("folderium.filePaneColumnsLayout") private var columnLayoutRaw: String = ""
     @AppStorage(ShortcutStore.storageKey) private var shortcutsRaw: String = ""
     @AppStorage("folderium.softDarkThemeEnabled") private var softDarkThemeEnabled: Bool = false
@@ -56,6 +84,26 @@ struct DualPaneView: View {
     @State private var paneSplitDragStartLeftWidth: CGFloat?
     @State private var leftDisplayedURLs: [URL] = []
     @State private var rightDisplayedURLs: [URL] = []
+    // Quad layout panes (bottom row): independent path/selection/search/history state.
+    @State private var bottomLeftPath: URL = SandboxAccessManager.defaultDirectory
+    @State private var bottomRightPath: URL = SandboxAccessManager.defaultDirectory
+    @State private var bottomLeftSelection: Set<URL> = []
+    @State private var bottomRightSelection: Set<URL> = []
+    @State private var bottomLeftSearchText: String = ""
+    @State private var bottomRightSearchText: String = ""
+    @State private var bottomLeftIsSearching: Bool = false
+    @State private var bottomRightIsSearching: Bool = false
+    @State private var bottomLeftBackHistory: [URL] = []
+    @State private var bottomLeftForwardHistory: [URL] = []
+    @State private var bottomRightBackHistory: [URL] = []
+    @State private var bottomRightForwardHistory: [URL] = []
+    @State private var isNavigatingBottomLeftHistory: Bool = false
+    @State private var isNavigatingBottomRightHistory: Bool = false
+    @State private var bottomLeftDisplayedURLs: [URL] = []
+    @State private var bottomRightDisplayedURLs: [URL] = []
+    // Quad layout: horizontal split between top and bottom rows.
+    @State private var rowSplitRatio: CGFloat = 0.5
+    @State private var rowSplitDragStartHeight: CGFloat?
     @State private var shortcutMonitor: Any?
     @State private var hostingWindow: NSWindow?
     @State private var activeShortcutBindings: [ShortcutBinding] = ShortcutStore.defaultBindings
@@ -83,15 +131,135 @@ struct DualPaneView: View {
     }
     
     private var activePaneSelection: Set<URL> {
-        activePane == .left ? leftSelection : rightSelection
+        switch activePane {
+        case .left: return leftSelection
+        case .right: return rightSelection
+        case .bottomLeft: return bottomLeftSelection
+        case .bottomRight: return bottomRightSelection
+        }
     }
     
     private var activePanePath: URL {
-        activePane == .left ? leftPath : rightPath
+        switch activePane {
+        case .left: return leftPath
+        case .right: return rightPath
+        case .bottomLeft: return bottomLeftPath
+        case .bottomRight: return bottomRightPath
+        }
     }
-    
     private var canCreateFolderInActivePane: Bool {
         FileManager.default.isWritableFile(atPath: activePanePath.path)
+    }
+    
+    // MARK: - Per-pane state accessors (quad layout)
+    
+    private func pathForPane(_ pane: ActivePane) -> URL {
+        switch pane {
+        case .left: return leftPath
+        case .right: return rightPath
+        case .bottomLeft: return bottomLeftPath
+        case .bottomRight: return bottomRightPath
+        }
+    }
+    
+    private func selectionForPane(_ pane: ActivePane) -> Set<URL> {
+        switch pane {
+        case .left: return leftSelection
+        case .right: return rightSelection
+        case .bottomLeft: return bottomLeftSelection
+        case .bottomRight: return bottomRightSelection
+        }
+    }
+    
+    private func displayedURLsForPane(_ pane: ActivePane) -> [URL] {
+        switch pane {
+        case .left: return leftDisplayedURLs
+        case .right: return rightDisplayedURLs
+        case .bottomLeft: return bottomLeftDisplayedURLs
+        case .bottomRight: return bottomRightDisplayedURLs
+        }
+    }
+    
+    private func backHistoryForPane(_ pane: ActivePane) -> [URL] {
+        switch pane {
+        case .left: return leftBackHistory
+        case .right: return rightBackHistory
+        case .bottomLeft: return bottomLeftBackHistory
+        case .bottomRight: return bottomRightBackHistory
+        }
+    }
+    
+    private func forwardHistoryForPane(_ pane: ActivePane) -> [URL] {
+        switch pane {
+        case .left: return leftForwardHistory
+        case .right: return rightForwardHistory
+        case .bottomLeft: return bottomLeftForwardHistory
+        case .bottomRight: return bottomRightForwardHistory
+        }
+    }
+    
+    private func bindingForPath(_ pane: ActivePane) -> Binding<URL> {
+        switch pane {
+        case .left: return $leftPath
+        case .right: return $rightPath
+        case .bottomLeft: return $bottomLeftPath
+        case .bottomRight: return $bottomRightPath
+        }
+    }
+    
+    private func bindingForSelection(_ pane: ActivePane) -> Binding<Set<URL>> {
+        switch pane {
+        case .left: return $leftSelection
+        case .right: return $rightSelection
+        case .bottomLeft: return $bottomLeftSelection
+        case .bottomRight: return $bottomRightSelection
+        }
+    }
+    
+    private func bindingForSearchText(_ pane: ActivePane) -> Binding<String> {
+        switch pane {
+        case .left: return $leftSearchText
+        case .right: return $rightSearchText
+        case .bottomLeft: return $bottomLeftSearchText
+        case .bottomRight: return $bottomRightSearchText
+        }
+    }
+    
+    private func bindingForIsSearching(_ pane: ActivePane) -> Binding<Bool> {
+        switch pane {
+        case .left: return $leftIsSearching
+        case .right: return $rightIsSearching
+        case .bottomLeft: return $bottomLeftIsSearching
+        case .bottomRight: return $bottomRightIsSearching
+        }
+    }
+    
+    private func setDisplayedURLs(_ urls: [URL], for pane: ActivePane) {
+        switch pane {
+        case .left: leftDisplayedURLs = urls
+        case .right: rightDisplayedURLs = urls
+        case .bottomLeft: bottomLeftDisplayedURLs = urls
+        case .bottomRight: bottomRightDisplayedURLs = urls
+        }
+    }
+    
+    private func setCurrentPathRaw(_ path: String, for pane: ActivePane) {
+        switch pane {
+        case .left: leftCurrentPathRaw = path
+        case .right: rightCurrentPathRaw = path
+        case .bottomLeft: bottomLeftCurrentPathRaw = path
+        case .bottomRight: bottomRightCurrentPathRaw = path
+        }
+    }
+    
+    private func setSelectionInPane(_ selection: Set<URL>, for pane: ActivePane) {
+        switch pane {
+        case .left: leftSelection = selection
+        case .right: rightSelection = selection
+        case .bottomLeft: bottomLeftSelection = selection
+        case .bottomRight: bottomRightSelection = selection
+        }
+        onSelectionChange?(selection)
     }
     
     // Callback to notify parent of selection changes
@@ -191,21 +359,18 @@ struct DualPaneView: View {
         guard !raw.isEmpty else { return [] }
         var result: Set<ActivePane> = []
         for token in raw.split(separator: ",") {
-            switch token.trimmingCharacters(in: .whitespaces) {
-            case "left": result.insert(.left)
-            case "right": result.insert(.right)
-            default: break
+            if let pane = ActivePane(rawValue: token.trimmingCharacters(in: .whitespaces)) {
+                result.insert(pane)
             }
         }
         return result
     }
     
     private static func encodeHiddenQuickAccessPanes(_ panes: Set<ActivePane>) -> String {
-        let tokens = [
-            panes.contains(.left) ? "left" : nil,
-            panes.contains(.right) ? "right" : nil
-        ].compactMap { $0 }
-        return tokens.joined(separator: ",")
+        panes
+            .sorted { $0.rawValue < $1.rawValue }
+            .map { $0.rawValue }
+            .joined(separator: ",")
     }
     
     private func recentLocations(for pane: ActivePane) -> [QuickLocation] {
@@ -215,6 +380,10 @@ struct DualPaneView: View {
             merged = (leftBackHistory + leftForwardHistory).reversed()
         case .right:
             merged = (rightBackHistory + rightForwardHistory).reversed()
+        case .bottomLeft:
+            merged = (bottomLeftBackHistory + bottomLeftForwardHistory).reversed()
+        case .bottomRight:
+            merged = (bottomRightBackHistory + bottomRightForwardHistory).reversed()
         }
         var seen = Set<String>()
         var result: [QuickLocation] = []
@@ -246,9 +415,16 @@ struct DualPaneView: View {
             HStack(spacing: 8) {
                 explorerToolbarButton("Open Left", systemImage: "folder.badge.plus") { selectFolder(for: .left) }
                 explorerToolbarButton("Open Right", systemImage: "folder.badge.plus") { selectFolder(for: .right) }
+                if paneLayout == .quad {
+                    explorerToolbarButton("Open BL", systemImage: "folder.badge.plus") { selectFolder(for: .bottomLeft) }
+                    explorerToolbarButton("Open BR", systemImage: "folder.badge.plus") { selectFolder(for: .bottomRight) }
+                }
                 
                 Divider().frame(height: 18)
                 
+                paneLayoutPicker
+                Divider().frame(height: 18)
+
                 explorerToolbarButton("Copy", systemImage: "doc.on.doc", shortcutHint: toolbarShortcutText(for: .copySelected)) { copySelectedFiles() }
                     .disabled(activePaneSelection.isEmpty)
                 explorerToolbarButton("Cut", systemImage: "scissors", shortcutHint: toolbarShortcutText(for: .cutSelected)) { cutSelectedFiles() }
@@ -323,163 +499,48 @@ struct DualPaneView: View {
                 let leftSidebarWidth = min(max(quickAccessWidth, 150), leftPaneWidth * 0.45)
                 let rightSidebarWidth = min(max(quickAccessWidth, 150), rightPaneWidth * 0.45)
                 
-                HStack(spacing: 0) {
-                    if !isSinglePaneMode || activePane == .left {
-                        HStack(spacing: 0) {
-                            if showNavigationPane && !hiddenQuickAccessPanes.contains(.left) {
-                                quickAccessSidebar(for: .left)
-                                    .frame(width: leftSidebarWidth)
-                                
-                                quickAccessSplitter(
-                                    columnWidth: isSinglePaneMode ? remainingWidth : leftPaneWidth,
-                                    clampedSidebarWidth: leftSidebarWidth
-                                )
-                            } else if showNavigationPane {
-                                quickAccessReopenStrip(for: .left)
-                            }
-                            
-                            VStack(spacing: 0) {
-                            FilePaneView(
-                                path: $leftPath,
-                                selection: $leftSelection,
-                                searchText: $leftSearchText,
-                                isSearching: $leftIsSearching,
-                                showHiddenFiles: showHiddenFiles,
-                                title: "Left Pane",
-                                isActive: activePane == .left,
-                                onOpenInTerminal: { openInTerminal(leftPath) },
-                                onRefresh: { refreshTrigger = UUID() },
-                                refreshTrigger: refreshTrigger,
-                                onBulkCompress: compressSelectedFiles,
-                                canNavigateBack: !leftBackHistory.isEmpty,
-                                canNavigateForward: !leftForwardHistory.isEmpty,
-                                onNavigateBack: { navigateBack(in: .left) },
-                                onNavigateForward: { navigateForward(in: .left) },
-                                onNavigateUp: { navigateUp(in: .left) },
-                                canPasteFromClipboard: { hasFilesInClipboard() },
-                                onPasteIntoPath: { destination in
-                                    activePane = .left
-                                    pasteFiles(destinationOverride: destination ?? leftPath)
-                                },
-                                onRecordMoveBatch: { title, pairs in
-                                    recordMovedItemsBatch(title: title, pairs: pairs)
-                                },
-                                onDisplayedURLsChange: { urls in
-                                    leftDisplayedURLs = urls
-                                },
-                                onFocus: {
-                                    activePane = .left
-                                }
-                            )
-                            .frame(maxWidth: .infinity)
-        .onChange(of: leftSelection) { _, _ in
-            onSelectionChange?(leftSelection)
-            QuickLookCoordinator.shared.refresh(urls: leftSelection.sorted { $0.path < $1.path })
-        }
-                            .onChange(of: leftPath) { oldValue, newValue in
-                                recordHistoryIfNeeded(for: .left, oldValue: oldValue, newValue: newValue)
-                                leftCurrentPathRaw = newValue.path
-                            }
-                            
-                            }
-                            .frame(maxWidth: .infinity)
-                        }
-                        .id("left-pane-\(paneLayoutEpoch)")
-                        .frame(width: isSinglePaneMode ? remainingWidth : leftPaneWidth, alignment: .leading)
+                // Quad rows share the same column widths as the top row.
+                let bottomLeftSidebarWidth = leftSidebarWidth
+                let bottomRightSidebarWidth = rightSidebarWidth
+                
+                VStack(spacing: 0) {
+                    if paneLayout == .quad && !isSinglePaneMode {
+                        let rowSplitterHeight: CGFloat = 6
+                        let totalHeight = max(geometry.size.height, 300)
+                        let availableHeight = max(totalHeight - rowSplitterHeight, 200)
+                        let topRowHeight = availableHeight * min(max(rowSplitRatio, 0.2), 0.8)
+                        let bottomRowHeight = availableHeight - topRowHeight
+                        
+                        dualRowContent(
+                            leftSidebarWidth: leftSidebarWidth,
+                            rightSidebarWidth: rightSidebarWidth,
+                            leftPaneWidth: leftPaneWidth,
+                            rightPaneWidth: rightPaneWidth,
+                            remainingWidth: remainingWidth
+                        )
+                        .frame(height: topRowHeight)
                         .clipped()
-                    }
-                    
-                    if !isSinglePaneMode {
-                        Rectangle()
-                            .fill(FolderiumTheme.separator(isSoftDark: softDarkThemeEnabled))
-                            .frame(width: 6)
-                            .contentShape(Rectangle())
-                            .gesture(
-                                DragGesture(minimumDistance: 2)
-                                    .onChanged { value in
-                                        let usableWidth = remainingWidth
-                                        if paneSplitDragStartLeftWidth == nil {
-                                            paneSplitDragStartLeftWidth = leftPaneWidth
-                                        }
-                                        let base = paneSplitDragStartLeftWidth ?? leftPaneWidth
-                                        let proposedLeft = base + value.translation.width
-                                        let clampedLeft = min(max(proposedLeft, 150), usableWidth - 150)
-                                        paneSplitRatio = clampedLeft / usableWidth
-                                    }
-                                    .onEnded { _ in
-                                        paneSplitDragStartLeftWidth = nil
-                                    }
-                            )
-                            .onTapGesture(count: 2) {
-                                withAnimation(.easeInOut(duration: 0.15)) {
-                                    paneSplitRatio = defaultPaneSplitRatio
-                                }
-                            }
-                    }
-                    
-                    if !isSinglePaneMode || activePane == .right {
-                        HStack(spacing: 0) {
-                            if showNavigationPane && !hiddenQuickAccessPanes.contains(.right) {
-                                quickAccessSidebar(for: .right)
-                                    .frame(width: rightSidebarWidth)
-                                
-                                quickAccessSplitter(
-                                    columnWidth: isSinglePaneMode ? remainingWidth : rightPaneWidth,
-                                    clampedSidebarWidth: rightSidebarWidth
-                                )
-                            } else if showNavigationPane {
-                                quickAccessReopenStrip(for: .right)
-                            }
-                            
-                            VStack(spacing: 0) {
-                            FilePaneView(
-                                path: $rightPath,
-                                selection: $rightSelection,
-                                searchText: $rightSearchText,
-                                isSearching: $rightIsSearching,
-                                showHiddenFiles: showHiddenFiles,
-                                title: "Right Pane",
-                                isActive: activePane == .right,
-                                onOpenInTerminal: { openInTerminal(rightPath) },
-                                onRefresh: { refreshTrigger = UUID() },
-                                refreshTrigger: refreshTrigger,
-                                onBulkCompress: compressSelectedFiles,
-                                canNavigateBack: !rightBackHistory.isEmpty,
-                                canNavigateForward: !rightForwardHistory.isEmpty,
-                                onNavigateBack: { navigateBack(in: .right) },
-                                onNavigateForward: { navigateForward(in: .right) },
-                                onNavigateUp: { navigateUp(in: .right) },
-                                canPasteFromClipboard: { hasFilesInClipboard() },
-                                onPasteIntoPath: { destination in
-                                    activePane = .right
-                                    pasteFiles(destinationOverride: destination ?? rightPath)
-                                },
-                                onRecordMoveBatch: { title, pairs in
-                                    recordMovedItemsBatch(title: title, pairs: pairs)
-                                },
-                                onDisplayedURLsChange: { urls in
-                                    rightDisplayedURLs = urls
-                                },
-                                onFocus: {
-                                    activePane = .right
-                                }
-                            )
-                            .frame(maxWidth: .infinity)
-        .onChange(of: rightSelection) { _, _ in
-            onSelectionChange?(rightSelection)
-            QuickLookCoordinator.shared.refresh(urls: rightSelection.sorted { $0.path < $1.path })
-        }
-                            .onChange(of: rightPath) { oldValue, newValue in
-                                recordHistoryIfNeeded(for: .right, oldValue: oldValue, newValue: newValue)
-                                rightCurrentPathRaw = newValue.path
-                            }
-                            
-                            }
-                            .frame(maxWidth: .infinity)
-                        }
-                        .id("right-pane-\(paneLayoutEpoch)")
-                        .frame(width: isSinglePaneMode ? remainingWidth : rightPaneWidth, alignment: .leading)
+                        
+                        rowSplitter(availableHeight: availableHeight)
+                        
+                        dualRowContent(
+                            leftSidebarWidth: bottomLeftSidebarWidth,
+                            rightSidebarWidth: bottomRightSidebarWidth,
+                            leftPaneWidth: leftPaneWidth,
+                            rightPaneWidth: rightPaneWidth,
+                            remainingWidth: remainingWidth,
+                            isBottomRow: true
+                        )
+                        .frame(height: bottomRowHeight)
                         .clipped()
+                    } else {
+                        dualRowContent(
+                            leftSidebarWidth: leftSidebarWidth,
+                            rightSidebarWidth: rightSidebarWidth,
+                            leftPaneWidth: leftPaneWidth,
+                            rightPaneWidth: rightPaneWidth,
+                            remainingWidth: remainingWidth
+                        )
                     }
                 }
                 .clipped()
@@ -517,8 +578,18 @@ struct DualPaneView: View {
                 rightPath = resolveRestoredPath(savedPathRaw: rightCurrentPathRaw, fallbackRoot: restoredRightPath)
                 didRestoreAnyBookmark = true
             }
+            // Quad bottom panes start under the restored top-row roots (no separate bookmarks).
+            if let restoredLeftPath = SandboxAccessManager.restoreBookmark(for: .left) {
+                bottomLeftPath = resolveRestoredPath(savedPathRaw: bottomLeftCurrentPathRaw, fallbackRoot: restoredLeftPath)
+            }
+            if let restoredRightPath = SandboxAccessManager.restoreBookmark(for: .right) {
+                bottomRightPath = resolveRestoredPath(savedPathRaw: bottomRightCurrentPathRaw, fallbackRoot: restoredRightPath)
+            }
             if !didRestoreAnyBookmark {
                 promptForInitialDownloadsAccess()
+            }
+            if let savedLayout = PaneLayout(rawValue: paneLayoutRaw) {
+                paneLayout = savedLayout
             }
             hiddenQuickAccessPanes = Self.decodeHiddenQuickAccessPanes(hiddenQuickAccessRaw)
             pinnedPaths = sanitizePinnedPaths(from: pinnedPathsRaw)
@@ -589,6 +660,220 @@ struct DualPaneView: View {
     }
     
     @ViewBuilder
+    private var paneLayoutPicker: some View {
+        Picker("Layout", selection: Binding(
+            get: { paneLayout },
+            set: { newValue in
+                setPaneLayout(newValue)
+            }
+        )) {
+            ForEach(PaneLayout.allCases, id: \.self) { layout in
+                Text(layout.label).tag(layout)
+            }
+        }
+        .pickerStyle(.segmented)
+        .frame(width: 130)
+        .help("Pane layout: 1 / 2 / 2×2")
+    }
+    
+    private func setPaneLayout(_ newValue: PaneLayout) {
+        guard newValue != paneLayout else { return }
+        withAnimation(.easeInOut(duration: 0.15)) {
+            paneLayout = newValue
+        }
+        paneLayoutRaw = newValue.rawValue
+        // Leaving single-pane layout: rebalance column split.
+        if newValue == .dual {
+            paneSplitRatio = defaultPaneSplitRatio
+        }
+        if newValue == .quad {
+            paneSplitRatio = defaultPaneSplitRatio
+            rowSplitRatio = 0.5
+        }
+        // Ensure active pane belongs to the visible layout.
+        let visible: [ActivePane] = {
+            switch newValue {
+            case .single: return [.left]
+            case .dual: return [.left, .right]
+            case .quad: return ActivePane.allCases
+            }
+        }()
+        if !visible.contains(activePane) {
+            activePane = .left
+        }
+        paneLayoutEpoch += 1
+        refreshTrigger = UUID()
+    }
+    
+    /// One row of the pane grid. Top row = left/right, bottom row = bottomLeft/bottomRight.
+    @ViewBuilder
+    private func dualRowContent(
+        leftSidebarWidth: CGFloat,
+        rightSidebarWidth: CGFloat,
+        leftPaneWidth: CGFloat,
+        rightPaneWidth: CGFloat,
+        remainingWidth: CGFloat,
+        isBottomRow: Bool = false
+    ) -> some View {
+        HStack(spacing: 0) {
+            paneColumn(
+                pane: isBottomRow ? .bottomLeft : .left,
+                sidebarWidth: leftSidebarWidth,
+                paneWidth: leftPaneWidth,
+                remainingWidth: remainingWidth
+            )
+            
+            if !isSinglePaneMode {
+                columnSplitter(remainingWidth: remainingWidth, leftPaneWidth: leftPaneWidth)
+            }
+            
+            paneColumn(
+                pane: isBottomRow ? .bottomRight : .right,
+                sidebarWidth: rightSidebarWidth,
+                paneWidth: rightPaneWidth,
+                remainingWidth: remainingWidth
+            )
+        }
+    }
+    
+    /// A single pane with its Quick Access sidebar. Renders nothing when its
+    /// layout slot is hidden (single layout / preview mode).
+    @ViewBuilder
+    private func paneColumn(
+        pane: ActivePane,
+        sidebarWidth: CGFloat,
+        paneWidth: CGFloat,
+        remainingWidth: CGFloat
+    ) -> some View {
+        let isShown: Bool = {
+            if isSinglePaneMode {
+                return pane == activePane || pane == .left
+            }
+            switch paneLayout {
+            case .single: return pane == .left
+            case .dual: return pane == .left || pane == .right
+            case .quad: return true
+            }
+        }()
+        
+        if isShown {
+            HStack(spacing: 0) {
+                if showNavigationPane && !hiddenQuickAccessPanes.contains(pane) {
+                    quickAccessSidebar(for: pane)
+                        .frame(width: sidebarWidth)
+                    
+                    quickAccessSplitter(
+                        columnWidth: paneWidth,
+                        clampedSidebarWidth: sidebarWidth
+                    )
+                } else if showNavigationPane {
+                    quickAccessReopenStrip(for: pane)
+                }
+                
+                FilePaneView(
+                    path: bindingForPath(pane),
+                    selection: bindingForSelection(pane),
+                    searchText: bindingForSearchText(pane),
+                    isSearching: bindingForIsSearching(pane),
+                    showHiddenFiles: showHiddenFiles,
+                    title: pane.displayName + " Pane",
+                    isActive: activePane == pane,
+                    onOpenInTerminal: { openInTerminal(pathForPane(pane)) },
+                    onRefresh: { refreshTrigger = UUID() },
+                    refreshTrigger: refreshTrigger,
+                    onBulkCompress: compressSelectedFiles,
+                    canNavigateBack: !backHistoryForPane(pane).isEmpty,
+                    canNavigateForward: !forwardHistoryForPane(pane).isEmpty,
+                    onNavigateBack: { navigateBack(in: pane) },
+                    onNavigateForward: { navigateForward(in: pane) },
+                    onNavigateUp: { navigateUp(in: pane) },
+                    canPasteFromClipboard: { hasFilesInClipboard() },
+                    onPasteIntoPath: { destination in
+                        activePane = pane
+                        pasteFiles(destinationOverride: destination ?? pathForPane(pane))
+                    },
+                    onRecordMoveBatch: { title, pairs in
+                        recordMovedItemsBatch(title: title, pairs: pairs)
+                    },
+                    onDisplayedURLsChange: { urls in
+                        setDisplayedURLs(urls, for: pane)
+                    },
+                    onFocus: {
+                        activePane = pane
+                    }
+                )
+                .frame(maxWidth: .infinity)
+                .onChange(of: selectionForPane(pane)) { _, newValue in
+                    onSelectionChange?(newValue)
+                    QuickLookCoordinator.shared.refresh(urls: newValue.sorted { $0.path < $1.path })
+                }
+                .onChange(of: pathForPane(pane)) { oldValue, newValue in
+                    recordHistoryIfNeeded(for: pane, oldValue: oldValue, newValue: newValue)
+                    setCurrentPathRaw(newValue.path, for: pane)
+                }
+            }
+            .id("\(pane.rawValue)-pane-\(paneLayoutEpoch)")
+            .frame(width: isSinglePaneMode ? remainingWidth : paneWidth, alignment: .leading)
+            .clipped()
+        }
+    }
+    
+    private func columnSplitter(remainingWidth: CGFloat, leftPaneWidth: CGFloat) -> some View {
+        Rectangle()
+            .fill(FolderiumTheme.separator(isSoftDark: softDarkThemeEnabled))
+            .frame(width: 6)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 2)
+                    .onChanged { value in
+                        let usableWidth = remainingWidth
+                        if paneSplitDragStartLeftWidth == nil {
+                            paneSplitDragStartLeftWidth = leftPaneWidth
+                        }
+                        let base = paneSplitDragStartLeftWidth ?? leftPaneWidth
+                        let proposedLeft = base + value.translation.width
+                        let clampedLeft = min(max(proposedLeft, 150), usableWidth - 150)
+                        paneSplitRatio = clampedLeft / usableWidth
+                    }
+                    .onEnded { _ in
+                        paneSplitDragStartLeftWidth = nil
+                    }
+            )
+            .onTapGesture(count: 2) {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    paneSplitRatio = defaultPaneSplitRatio
+                }
+            }
+    }
+    
+    private func rowSplitter(availableHeight: CGFloat) -> some View {
+        Rectangle()
+            .fill(FolderiumTheme.separator(isSoftDark: softDarkThemeEnabled))
+            .frame(height: 6)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 2)
+                    .onChanged { value in
+                        if rowSplitDragStartHeight == nil {
+                            rowSplitDragStartHeight = availableHeight * rowSplitRatio
+                        }
+                        let base = rowSplitDragStartHeight ?? (availableHeight * rowSplitRatio)
+                        let proposed = base + value.translation.height
+                        let clamped = min(max(proposed, availableHeight * 0.2), availableHeight * 0.8)
+                        rowSplitRatio = clamped / availableHeight
+                    }
+                    .onEnded { _ in
+                        rowSplitDragStartHeight = nil
+                    }
+            )
+            .onTapGesture(count: 2) {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    rowSplitRatio = 0.5
+                }
+            }
+    }
+    
+    @ViewBuilder
     private func quickAccessReopenStrip(for pane: ActivePane) -> some View {
         Button {
             withAnimation(.easeInOut(duration: 0.15)) {
@@ -610,13 +895,13 @@ struct DualPaneView: View {
         }
         .buttonStyle(.plain)
         .background(FolderiumTheme.controlBackground(isSoftDark: softDarkThemeEnabled))
-        .help("Show Quick Access for \(pane == .left ? "Left" : "Right") pane")
+        .help("Show Quick Access for \(pane.displayName) pane")
     }
     
     @ViewBuilder
     private func quickAccessSidebar(for pane: ActivePane) -> some View {
         let paneRecentLocations = recentLocations(for: pane)
-        let paneTitle = pane == .left ? "Left" : "Right"
+        let paneTitle = pane.displayName
         
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 2) {
@@ -900,6 +1185,12 @@ struct DualPaneView: View {
                 rightPath = selectedURL
                 rightCurrentPathRaw = selectedURL.path
                 SandboxAccessManager.saveBookmark(for: .right, url: selectedURL)
+            case .bottomLeft:
+                bottomLeftPath = selectedURL
+                bottomLeftCurrentPathRaw = selectedURL.path
+            case .bottomRight:
+                bottomRightPath = selectedURL
+                bottomRightCurrentPathRaw = selectedURL.path
             }
         }
     }
@@ -963,6 +1254,20 @@ struct DualPaneView: View {
             }
             rightBackHistory.append(oldValue)
             rightForwardHistory.removeAll()
+        case .bottomLeft:
+            if isNavigatingBottomLeftHistory {
+                isNavigatingBottomLeftHistory = false
+                return
+            }
+            bottomLeftBackHistory.append(oldValue)
+            bottomLeftForwardHistory.removeAll()
+        case .bottomRight:
+            if isNavigatingBottomRightHistory {
+                isNavigatingBottomRightHistory = false
+                return
+            }
+            bottomRightBackHistory.append(oldValue)
+            bottomRightForwardHistory.removeAll()
         }
     }
     
@@ -972,11 +1277,15 @@ struct DualPaneView: View {
             leftPath = url
         case .right:
             rightPath = url
+        case .bottomLeft:
+            bottomLeftPath = url
+        case .bottomRight:
+            bottomRightPath = url
         }
     }
     
     private func pinActiveFolder(in pane: ActivePane) {
-        let current = (pane == .left ? leftPath : rightPath).path
+        let current = pathForPane(pane).path
         guard !current.isEmpty else { return }
         if !pinnedPaths.contains(current) {
             pinnedPaths.append(current)
@@ -1055,6 +1364,16 @@ struct DualPaneView: View {
             isNavigatingRightHistory = true
             rightForwardHistory.append(rightPath)
             rightPath = previous
+        case .bottomLeft:
+            guard let previous = bottomLeftBackHistory.popLast() else { return }
+            isNavigatingBottomLeftHistory = true
+            bottomLeftForwardHistory.append(bottomLeftPath)
+            bottomLeftPath = previous
+        case .bottomRight:
+            guard let previous = bottomRightBackHistory.popLast() else { return }
+            isNavigatingBottomRightHistory = true
+            bottomRightForwardHistory.append(bottomRightPath)
+            bottomRightPath = previous
         }
     }
     
@@ -1070,6 +1389,16 @@ struct DualPaneView: View {
             isNavigatingRightHistory = true
             rightBackHistory.append(rightPath)
             rightPath = next
+        case .bottomLeft:
+            guard let next = bottomLeftForwardHistory.popLast() else { return }
+            isNavigatingBottomLeftHistory = true
+            bottomLeftBackHistory.append(bottomLeftPath)
+            bottomLeftPath = next
+        case .bottomRight:
+            guard let next = bottomRightForwardHistory.popLast() else { return }
+            isNavigatingBottomRightHistory = true
+            bottomRightBackHistory.append(bottomRightPath)
+            bottomRightPath = next
         }
     }
     
@@ -1083,11 +1412,19 @@ struct DualPaneView: View {
             let parent = rightPath.deletingLastPathComponent()
             guard parent.path != rightPath.path else { return }
             rightPath = parent
+        case .bottomLeft:
+            let parent = bottomLeftPath.deletingLastPathComponent()
+            guard parent.path != bottomLeftPath.path else { return }
+            bottomLeftPath = parent
+        case .bottomRight:
+            let parent = bottomRightPath.deletingLastPathComponent()
+            guard parent.path != bottomRightPath.path else { return }
+            bottomRightPath = parent
         }
     }
     
     private func renameSelectedItem() {
-        let selection = activePane == .left ? leftSelection : rightSelection
+        let selection = activePaneSelection
         guard selection.count == 1, let selectedURL = selection.first else { return }
         
         let currentName = selectedURL.lastPathComponent
@@ -1114,11 +1451,7 @@ struct DualPaneView: View {
             try FileManager.default.moveItem(at: selectedURL, to: newURL)
             recordMovedItemsBatch(title: "Rename", pairs: [(from: selectedURL, to: newURL)])
             refreshTrigger = UUID()
-            if activePane == .left {
-                leftSelection = [newURL]
-            } else {
-                rightSelection = [newURL]
-            }
+            setSelectionInPane([newURL], for: activePane)
         } catch {
             let errorAlert = NSAlert()
             errorAlert.messageText = "Rename Failed"
@@ -1131,7 +1464,7 @@ struct DualPaneView: View {
     
     private func copySelectedFiles() {
             let selectedFiles = Array(activePaneSelection)
-            print("Copy selected called with \(selectedFiles.count) files from \(activePane == .left ? "left" : "right") pane")
+            print("Copy selected called with \(selectedFiles.count) files from \(activePane.rawValue) pane")
             
             if !selectedFiles.isEmpty {
                 let pasteboard = NSPasteboard.general
@@ -1161,7 +1494,7 @@ struct DualPaneView: View {
         
         private func cutSelectedFiles() {
             let selectedFiles = Array(activePaneSelection)
-            print("Cut selected called with \(selectedFiles.count) files from \(activePane == .left ? "left" : "right") pane")
+            print("Cut selected called with \(selectedFiles.count) files from \(activePane.rawValue) pane")
             
             if !selectedFiles.isEmpty {
                 let pasteboard = NSPasteboard.general
@@ -1204,7 +1537,7 @@ struct DualPaneView: View {
                 
                 if !urls.isEmpty {
                     // Determine target directory (explicit destination or active pane)
-                    let targetDirectory = destinationOverride ?? (activePane == .left ? leftPath : rightPath)
+                    let targetDirectory = destinationOverride ?? activePanePath
                     
                     if isCutOperation {
                         // 移動維持即時操作(非傳輸佇列範圍)
@@ -1362,7 +1695,7 @@ struct DualPaneView: View {
         
         private func compressSelectedFiles() {
             let selectedFiles = Array(activePaneSelection)
-            print("Bulk compress called with \(selectedFiles.count) files from \(activePane == .left ? "left" : "right") pane")
+            print("Bulk compress called with \(selectedFiles.count) files from \(activePane.rawValue) pane")
             print("Left selection: \(leftSelection.count) files")
             print("Right selection: \(rightSelection.count) files")
             
@@ -1428,13 +1761,7 @@ struct DualPaneView: View {
         }
         
         // Clear selection in active pane only (operations are scoped to active pane).
-        if activePane == .left {
-            leftSelection.removeAll()
-            onSelectionChange?(leftSelection)
-        } else {
-            rightSelection.removeAll()
-            onSelectionChange?(rightSelection)
-        }
+        setSelectionInPane([], for: activePane)
         
         // Trigger refresh of both panes
         refreshTrigger = UUID()
@@ -1575,7 +1902,7 @@ struct DualPaneView: View {
         case .refreshActivePane:
             refreshTrigger = UUID()
         case .openTerminalActivePane:
-            openInTerminal(activePane == .left ? leftPath : rightPath)
+            openInTerminal(activePanePath)
         case .navigateBackActivePane:
             navigateBack(in: activePane)
         case .navigateForwardActivePane:
@@ -1599,15 +1926,8 @@ struct DualPaneView: View {
     }
     
     private func selectAllInActivePane() {
-        let urls = activePane == .left ? leftDisplayedURLs : rightDisplayedURLs
-        let selected = Set(urls)
-        if activePane == .left {
-            leftSelection = selected
-            onSelectionChange?(leftSelection)
-        } else {
-            rightSelection = selected
-            onSelectionChange?(rightSelection)
-        }
+        let urls = displayedURLsForPane(activePane)
+        setSelectionInPane(Set(urls), for: activePane)
     }
     
     /// Space key: Finder-style Quick Look of the active pane's selection.
@@ -1618,7 +1938,7 @@ struct DualPaneView: View {
     }
     
     private func createNewFolderInActivePane() {
-        let targetDirectory = activePane == .left ? leftPath : rightPath
+        let targetDirectory = activePanePath
         let baseName = "New Folder"
         var candidateName = baseName
         var counter = 1
@@ -1631,13 +1951,7 @@ struct DualPaneView: View {
         let newFolderURL = targetDirectory.appendingPathComponent(candidateName)
         do {
             try FileManager.default.createDirectory(at: newFolderURL, withIntermediateDirectories: false)
-            if activePane == .left {
-                leftSelection = [newFolderURL]
-                onSelectionChange?(leftSelection)
-            } else {
-                rightSelection = [newFolderURL]
-                onSelectionChange?(rightSelection)
-            }
+            setSelectionInPane([newFolderURL], for: activePane)
             refreshTrigger = UUID()
         } catch {
             print("Error creating folder in active pane: \(error)")
