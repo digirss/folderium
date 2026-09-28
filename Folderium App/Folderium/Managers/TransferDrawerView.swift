@@ -28,9 +28,35 @@ struct ConflictStrategyPicker: View {
     }
 }
 
+// MARK: - TransfersLimitPicker: 同時傳輸檔案數 N(1~4;下一個作業生效)
+
+struct TransfersLimitPicker: View {
+    @ObservedObject var queue = TransferQueue.shared
+
+    var body: some View {
+        Menu {
+            ForEach(1...4, id: \.self) { n in
+                Button {
+                    queue.setTransfersLimit(n)
+                } label: {
+                    HStack {
+                        if queue.transfersLimit == n {
+                            Image(systemName: "checkmark")
+                        }
+                        Text("同時傳 \(n) 個檔案")
+                    }
+                }
+            }
+        } label: {
+            Label("同時 \(queue.transfersLimit)", systemImage: "arrow.triangle.swap.2.circlepath")
+        }
+        .menuStyle(.borderlessButton)
+        .help("同時傳輸的檔案數上限(1~4)。調整後從下一個作業生效。")
+    }
+}
+
 // MARK: - TransferDrawerView: 底部傳輸進度抽屜(PRD §3.6)
-// 可折疊;顯示目前檔名、進度/速度、等待批次、狀態、失敗原因。
-// 按鈕只保留:暫停、繼續/重試、移除等待批次、清空已完成。
+// 加入佇列 → 按「啟動」開始;「暫停」停止並標記只傳一半;再啟動接續。
 
 struct TransferDrawerView: View {
     @ObservedObject var queue = TransferQueue.shared
@@ -40,10 +66,6 @@ struct TransferDrawerView: View {
 
     private var activeBatches: [QueueBatch] {
         queue.batches.filter { $0.state != .done }
-    }
-
-    private var hasAnyActivity: Bool {
-        !queue.batches.isEmpty
     }
 
     var body: some View {
@@ -73,22 +95,28 @@ struct TransferDrawerView: View {
                 Text(queueStateText)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
 
                 Spacer()
 
+                TransfersLimitPicker()
                 controlButtons
             } else {
                 Spacer()
-                if let p = queue.currentProgress, let pct = p.percent {
+                if queue.queueStarted, let p = queue.currentProgress, let pct = p.percent {
                     Text(String(format: "%.0f%%", pct))
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(.secondary)
+                } else if !activeBatches.isEmpty {
+                    Text(queue.queueStarted ? "傳輸中" : "待啟動 \(activeBatches.count) 批")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.orange)
                 }
             }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 5)
-        .background(FolderiumTheme.controlBackground(isSoftDark: false))
         .overlay(alignment: .top) { Divider() }
     }
 
@@ -96,7 +124,13 @@ struct TransferDrawerView: View {
         if let blocked = queue.dispatchBlockedReason {
             return "⚠️ 需處理:\(blocked)"
         }
-        if queue.queuePaused { return "佇列已暫停" }
+        if let notice = queue.partialNotice {
+            return notice
+        }
+        if !queue.queueStarted {
+            let n = queue.hasAnyUndoneWork ? "有批次待啟動" : "沒有等待中的批次"
+            return "佇列未啟動 — \(n)(加入的檔案會先排在這裡)"
+        }
         if let p = queue.currentProgress {
             var parts: [String] = []
             if let name = p.fileName { parts.append(name) }
@@ -111,16 +145,26 @@ struct TransferDrawerView: View {
 
     private var controlButtons: some View {
         HStack(spacing: 6) {
-            if queue.queuePaused || queue.hasRecoverableWork {
-                Button("繼續") { queue.userResume() }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(queue.dispatchBlockedReason != nil)
+            if queue.queueStarted {
+                Button {
+                    queue.pauseQueue()
+                } label: {
+                    Label("暫停", systemImage: "pause.fill")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(!queue.hasAnyUndoneWork && queue.currentProgress == nil)
+                .help("停止派發並停止目前作業;未完成的檔案會標記,啟動後接續")
             } else {
-                Button("暫停") { queue.pauseQueue() }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(activeBatches.isEmpty)
+                Button {
+                    queue.startQueue()
+                } label: {
+                    Label("啟動", systemImage: "play.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(!queue.hasAnyUndoneWork || queue.dispatchBlockedReason != nil)
+                .help("開始傳輸佇列;只傳一半的檔案會重傳,已完成的不重傳")
             }
 
             Button("清空已完成") { queue.clearFinished() }
@@ -151,7 +195,7 @@ struct TransferDrawerView: View {
                     Text(err)
                         .font(.system(size: 11))
                         .foregroundStyle(.red)
-                        .lineLimit(2)
+                        .lineLimit(3)
                     Spacer()
                     Button("知道了") { queue.engineError = nil }
                         .buttonStyle(.borderless)
@@ -161,9 +205,23 @@ struct TransferDrawerView: View {
                 .padding(.top, 4)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            if let notice = queue.partialNotice {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                        .font(.system(size: 11))
+                    Text(notice)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.orange)
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.top, 4)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
 
-            if !hasAnyActivity {
-                Text("沒有傳輸工作")
+            if queue.batches.isEmpty {
+                Text("沒有傳輸工作 — 拖曳或複製貼上檔案會先進入這裡,按「啟動」開始傳輸")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
@@ -247,7 +305,7 @@ struct TransferDrawerView: View {
                 if let err = batch.lastError, batch.state != .done {
                     Text(err)
                         .font(.system(size: 10))
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(batch.results.partial > 0 ? .orange : .secondary)
                         .lineLimit(2)
                 }
             }
@@ -259,7 +317,7 @@ struct TransferDrawerView: View {
                         .controlSize(.mini)
                         .disabled(queue.dispatchBlockedReason != nil)
                 }
-                if batch.state == .waiting || batch.state == .paused || batch.state == .needsAttention || batch.state == .done {
+                if batch.state != .running && batch.state != .stopping {
                     Button {
                         showBatchDetail = batch.batchId
                     } label: {
@@ -303,11 +361,11 @@ struct TransferDrawerView: View {
                 HStack {
                     Image(systemName: itemIcon(item))
                         .font(.system(size: 10))
-                        .foregroundStyle(item.itemState == .failed ? .red : item.itemState == .unsupported ? .orange : .secondary)
+                        .foregroundStyle(item.itemState == .failed ? .red : item.itemState == .unsupported || item.itemState == .partial ? .orange : .secondary)
                     Text(item.itemName).lineLimit(1)
                     Spacer()
                     Text(item.itemState.displayName)
-                        .foregroundStyle(item.itemState == .failed ? .red : item.itemState == .unsupported ? .orange : .secondary)
+                        .foregroundStyle(item.itemState == .failed ? .red : item.itemState == .unsupported || item.itemState == .partial ? .orange : .secondary)
                 }
                 .font(.system(size: 11))
             }
@@ -332,6 +390,7 @@ struct TransferDrawerView: View {
         case .failed: return "xmark.circle"
         case .skippedSameName: return "minus.circle"
         case .unsupported: return "exclamationmark.triangle"
+        case .partial: return "clock.badge.exclamationmark"
         }
     }
 
@@ -339,10 +398,10 @@ struct TransferDrawerView: View {
         var parts: [String] = []
         let copied = batch.items.filter { $0.itemState == .done }.count
         if copied > 0 { parts.append("已複製 \(copied)") }
-        let skipped = batch.results.engineNoTransfer
-        if batch.strategy == .addOnly, skipped > 0 {
-            parts.append("因同名略過 ≤\(skipped)(引擎判定無須傳輸)") 
-        }
+        let skipped = batch.items.filter { $0.itemState == .skippedSameName }.count
+        if skipped > 0 { parts.append("同名略過 \(skipped)") }
+        let partial = batch.items.filter { $0.itemState == .partial }.count
+        if partial > 0 { parts.append("只傳一半 \(partial)") }
         let failed = batch.items.filter { $0.itemState == .failed }.count
         if failed > 0 { parts.append("失敗 \(failed)") }
         let unsupported = batch.items.filter { $0.itemState == .unsupported }.count

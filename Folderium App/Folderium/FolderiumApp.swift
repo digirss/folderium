@@ -296,6 +296,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Set activation policy to regular
         NSApp.setActivationPolicy(.regular)
         
+        // 單實例 writer 鎖(PRD §2):第二實例轉交既有實例後退出
+        if !SingleInstanceGuard.acquire() {
+            let alert = NSAlert()
+            alert.messageText = "Folderium 已在執行"
+            alert.informativeText = "佇列已由現有實例管理,將切換到該視窗。"
+            alert.addButton(withTitle: "好")
+            _ = alert.runModal()
+            SingleInstanceGuard.activateExistingInstance()
+            NSApp.terminate(nil)
+            return
+        }
+        
         // Maximize the initial window to screen size
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
             self.maximizeInitialWindow()

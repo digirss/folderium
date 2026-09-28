@@ -180,12 +180,21 @@ final class RcloneDaemon: NSObject, ObservableObject {
         var writeSet = fd_set()
         withUnsafeMutablePointer(to: &writeSet) { ptr in
             withUnsafeMutableBytes(of: &ptr.pointee.fds_bits) { raw in
+                // fds_bits 是 int32 陣列;以 Int32 視圖設 bit
+                let int32View = raw.bindMemory(to: Int32.self)
                 let idx = Int(fd) / 32
-                if raw.count > idx { raw[idx] |= UInt8(1 << (Int(fd) % 32)) }
+                if int32View.count > idx {
+                    int32View[idx] |= Int32(1 << (Int(fd) % 32))
+                }
             }
         }
         var tv = timeval(tv_sec: 0, tv_usec: 300_000)
-        return select(fd + 1, nil, &writeSet, nil, &tv) > 0
+        guard select(fd + 1, nil, &writeSet, nil, &tv) > 0 else { return false }
+        // writable 不代表連上:連線被拒也會 writable。檢查 SO_ERROR。
+        var soError: Int32 = 0
+        var len = socklen_t(MemoryLayout<Int32>.size)
+        getsockopt(fd, SOL_SOCKET, SO_ERROR, &soError, &len)
+        return soError == 0
     }
 
     // MARK: Identity persistence (PRD §3.4 rule 6)
@@ -313,18 +322,26 @@ final class RcloneDaemon: NSObject, ObservableObject {
 
         var out = RCResponse(httpStatus: 0, body: Data(), json: nil)
         let semaphore = DispatchSemaphore(value: 0)
+        // 注意:不在 serial queue 內 wait(會自鎖);dataTask callback 直接 signal
+        var capturedData: Data?
+        var capturedResponse: URLResponse?
+        var capturedError: Error?
+        let task = URLSession.shared.dataTask(with: request) { data, response, error in
+            capturedData = data
+            capturedResponse = response
+            capturedError = error
+            semaphore.signal()
+        }
+        // 序列化起點:在 serial queue 上 resume,但不 wait(queue 不阻塞)
         httpSerialQueue.async {
-            URLSession.shared.dataTask(with: request) { data, response, error in
-                if error == nil {
-                    let http = (response as? HTTPURLResponse)?.statusCode ?? 0
-                    let json = (data.flatMap { try? JSONSerialization.jsonObject(with: $0) }) as? [String: Any]
-                    out = RCResponse(httpStatus: http, body: data ?? Data(), json: json)
-                }
-                semaphore.signal()
-            }.resume()
-            semaphore.wait()
+            task.resume()
         }
         _ = semaphore.wait(timeout: .now() + 35)
+        if capturedError == nil {
+            let http = (capturedResponse as? HTTPURLResponse)?.statusCode ?? 0
+            let json = (capturedData.flatMap { try? JSONSerialization.jsonObject(with: $0) }) as? [String: Any]
+            out = RCResponse(httpStatus: http, body: capturedData ?? Data(), json: json)
+        }
         return out
     }
 

@@ -47,7 +47,10 @@ struct QueueStore {
             throw QueueStoreError.corrupt("無法讀取:\(error.localizedDescription)")
         }
         do {
-            let doc = try JSONDecoder().decode(QueueDocument.self, from: data)
+            let doc: QueueDocument
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            doc = try decoder.decode(QueueDocument.self, from: data)
             guard doc.schemaVersion == Self.schemaVersion else {
                 throw QueueStoreError.unsupportedSchema(doc.schemaVersion)
             }

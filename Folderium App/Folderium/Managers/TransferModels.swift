@@ -55,6 +55,7 @@ enum ItemState: String, Codable {
     case failed
     case skippedSameName   // 因同名略過(只新增策略)
     case unsupported       // 符號連結、套件等不支援項目
+    case partial           // 只傳一半:停止/中斷時偵測;啟動後從頭重傳該檔
 
     var displayName: String {
         switch self {
@@ -63,6 +64,7 @@ enum ItemState: String, Codable {
         case .failed: return "失敗"
         case .skippedSameName: return "因同名略過"
         case .unsupported: return "不支援"
+        case .partial: return "只傳一半"
         }
     }
 }
@@ -77,15 +79,33 @@ struct BatchItem: Codable, Identifiable {
     var lastError: String?
 }
 
-/// 批次結果摘要(PRD §3.5:區分實際複製/同名略過/引擎判定無須傳輸/失敗)
+/// 批次結果摘要(PRD §3.5:區分實際複製/同名略過/引擎判定無須傳輸/失敗/只傳一半)
 struct BatchResults: Codable, Equatable {
     var copied: Int = 0
     var skippedSameName: Int = 0
     var engineNoTransfer: Int = 0
     var failed: Int = 0
     var unsupported: Int = 0
+    var partial: Int = 0
 
-    var hasIssues: Bool { failed > 0 || unsupported > 0 }
+    var hasIssues: Bool { failed > 0 || unsupported > 0 || partial > 0 }
+
+    // 舊版 queue.json(無 partial 欄位)相容
+    enum CodingKeys: String, CodingKey {
+        case copied, skippedSameName, engineNoTransfer, failed, unsupported, partial
+    }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        copied = try c.decodeIfPresent(Int.self, forKey: .copied) ?? 0
+        skippedSameName = try c.decodeIfPresent(Int.self, forKey: .skippedSameName) ?? 0
+        engineNoTransfer = try c.decodeIfPresent(Int.self, forKey: .engineNoTransfer) ?? 0
+        failed = try c.decodeIfPresent(Int.self, forKey: .failed) ?? 0
+        unsupported = try c.decodeIfPresent(Int.self, forKey: .unsupported) ?? 0
+        partial = try c.decodeIfPresent(Int.self, forKey: .partial) ?? 0
+    }
 }
 
 /// 一次拖曳或貼上的選取項目算一批
@@ -108,6 +128,9 @@ struct QueueBatch: Codable, Identifiable {
     var runtimeJobID: Int64?
     var runtimeJobGroup: String?
     var results: BatchResults = BatchResults()
+    /// 派發時記錄「目的地已存在」的選取項目相對路徑。
+    /// 停止偵測只傳一半時,只把「不在清單內但出現在目的地」的視為我們的半成品。
+    var preExistingRelPaths: [String]? = nil
     /// 加入時是否已向使用者提示「依執行時來源內容複製」
     var runtimeNotedAtAdd: Bool = false
 
