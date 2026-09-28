@@ -46,6 +46,10 @@ struct DualPaneView: View {
     @State private var isNavigatingLeftHistory: Bool = false
     @State private var isNavigatingRightHistory: Bool = false
     @State private var quickAccessWidth: CGFloat = 190
+    // Per-pane Quick Access visibility: panes listed here have their sidebar closed
+    // (global showNavigationPane still hides all sidebars at once).
+    @AppStorage("folderium.quickAccessHiddenPanes") private var hiddenQuickAccessRaw: String = ""
+    @State private var hiddenQuickAccessPanes: Set<ActivePane> = []
     @State private var paneSplitRatio: CGFloat = 0.5
     @State private var sidebarDragStartWidth: CGFloat?
     @State private var paneSplitDragStartLeftWidth: CGFloat?
@@ -182,6 +186,27 @@ struct DualPaneView: View {
         saveToolbarColumnsLayout(defaultToolbarLayout)
     }
     
+    private static func decodeHiddenQuickAccessPanes(_ raw: String) -> Set<ActivePane> {
+        guard !raw.isEmpty else { return [] }
+        var result: Set<ActivePane> = []
+        for token in raw.split(separator: ",") {
+            switch token.trimmingCharacters(in: .whitespaces) {
+            case "left": result.insert(.left)
+            case "right": result.insert(.right)
+            default: break
+            }
+        }
+        return result
+    }
+    
+    private static func encodeHiddenQuickAccessPanes(_ panes: Set<ActivePane>) -> String {
+        let tokens = [
+            panes.contains(.left) ? "left" : nil,
+            panes.contains(.right) ? "right" : nil
+        ].compactMap { $0 }
+        return tokens.joined(separator: ",")
+    }
+    
     private func recentLocations(for pane: ActivePane) -> [QuickLocation] {
         let merged: [URL]
         switch pane {
@@ -300,7 +325,7 @@ struct DualPaneView: View {
                 HStack(spacing: 0) {
                     if !isSinglePaneMode || activePane == .left {
                         HStack(spacing: 0) {
-                            if showNavigationPane {
+                            if showNavigationPane && !hiddenQuickAccessPanes.contains(.left) {
                                 quickAccessSidebar(for: .left)
                                     .frame(width: leftSidebarWidth)
                                 
@@ -308,6 +333,8 @@ struct DualPaneView: View {
                                     columnWidth: isSinglePaneMode ? remainingWidth : leftPaneWidth,
                                     clampedSidebarWidth: leftSidebarWidth
                                 )
+                            } else if showNavigationPane {
+                                quickAccessReopenStrip(for: .left)
                             }
                             
                             VStack(spacing: 0) {
@@ -390,7 +417,7 @@ struct DualPaneView: View {
                     
                     if !isSinglePaneMode || activePane == .right {
                         HStack(spacing: 0) {
-                            if showNavigationPane {
+                            if showNavigationPane && !hiddenQuickAccessPanes.contains(.right) {
                                 quickAccessSidebar(for: .right)
                                     .frame(width: rightSidebarWidth)
                                 
@@ -398,6 +425,8 @@ struct DualPaneView: View {
                                     columnWidth: isSinglePaneMode ? remainingWidth : rightPaneWidth,
                                     clampedSidebarWidth: rightSidebarWidth
                                 )
+                            } else if showNavigationPane {
+                                quickAccessReopenStrip(for: .right)
                             }
                             
                             VStack(spacing: 0) {
@@ -488,6 +517,7 @@ struct DualPaneView: View {
             if !didRestoreAnyBookmark {
                 promptForInitialDownloadsAccess()
             }
+            hiddenQuickAccessPanes = Self.decodeHiddenQuickAccessPanes(hiddenQuickAccessRaw)
             pinnedPaths = sanitizePinnedPaths(from: pinnedPathsRaw)
             persistPinnedPaths()
             activeShortcutBindings = ShortcutStore.load(from: shortcutsRaw)
@@ -509,6 +539,9 @@ struct DualPaneView: View {
             if sanitized != pinnedPaths {
                 pinnedPaths = sanitized
             }
+        }
+        .onChange(of: hiddenQuickAccessPanes) { _, newValue in
+            hiddenQuickAccessRaw = Self.encodeHiddenQuickAccessPanes(newValue)
         }
         .onChange(of: isSinglePaneMode) { _, _ in
             // Returning from preview mode should restore balanced dual-pane layout.
@@ -553,6 +586,31 @@ struct DualPaneView: View {
     }
     
     @ViewBuilder
+    private func quickAccessReopenStrip(for pane: ActivePane) -> some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                _ = hiddenQuickAccessPanes.remove(pane)
+            }
+        } label: {
+            VStack(spacing: 6) {
+                Image(systemName: "sidebar.leading")
+                    .font(.system(size: 12))
+                Text("Quick")
+                    .font(.system(size: 9))
+                Text("Access")
+                    .font(.system(size: 9))
+            }
+            .foregroundColor(.secondary)
+            .frame(width: 22)
+            .frame(maxHeight: .infinity)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(FolderiumTheme.controlBackground(isSoftDark: softDarkThemeEnabled))
+        .help("Show Quick Access for \(pane == .left ? "Left" : "Right") pane")
+    }
+    
+    @ViewBuilder
     private func quickAccessSidebar(for pane: ActivePane) -> some View {
         let paneRecentLocations = recentLocations(for: pane)
         let paneTitle = pane == .left ? "Left" : "Right"
@@ -568,6 +626,23 @@ struct DualPaneView: View {
             .padding(.horizontal, 12)
             .padding(.top, 10)
             .padding(.bottom, 6)
+            .overlay(alignment: .topTrailing) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        _ = hiddenQuickAccessPanes.insert(pane)
+                    }
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundColor(.secondary)
+                        .frame(width: 18, height: 18)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Hide Quick Access for \(paneTitle) pane")
+                .padding(.trailing, 6)
+                .padding(.top, 8)
+            }
             
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
