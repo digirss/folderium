@@ -441,6 +441,3 @@ struct PDFPreviewView: NSViewRepresentable {
     }
 }
 
-#Preview {
-    ContentView()
-}

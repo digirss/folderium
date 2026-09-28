@@ -4772,6 +4772,3 @@ struct StatusBarView: View {
     }
 }
 
-#Preview {
-    DualPaneView()
-}
