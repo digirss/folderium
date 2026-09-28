@@ -4816,30 +4816,48 @@ final class DirectoryWatcher {
     
     func start() {
         stop()
-        
-        fileDescriptor = open(directoryURL.path, O_EVTONLY)
-        guard fileDescriptor >= 0 else { return }
-        
-        let queue = DispatchQueue(label: "folderium.directory-watcher", qos: .utility)
-        source = DispatchSource.makeFileSystemObjectSource(
-            fileDescriptor: fileDescriptor,
-            eventMask: [.write, .delete, .rename, .attrib, .extend, .link, .revoke],
-            queue: queue
-        )
-        
-        source?.setEventHandler { [weak self] in
-            self?.onChange()
-        }
-        
-        source?.setCancelHandler { [fileDescriptor] in
-            if fileDescriptor >= 0 {
-                close(fileDescriptor)
+
+        // open() on network volumes (SMB/NFS) can block for a long time or even hang
+        // (observed: _fcntl_overlay_open stuck on smbfs). Never run it on the main
+        // thread — do the open + source setup on a utility queue, then resume there.
+        let dirPath = directoryURL.path
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self else { return }
+            let fd = open(dirPath, O_EVTONLY)
+            guard fd >= 0 else { return }
+
+            let queue = DispatchQueue(label: "folderium.directory-watcher", qos: .utility)
+            let src = DispatchSource.makeFileSystemObjectSource(
+                fileDescriptor: fd,
+                eventMask: [.write, .delete, .rename, .attrib, .extend, .link, .revoke],
+                queue: queue
+            )
+
+            src.setEventHandler { [weak self] in
+                self?.onChange()
+            }
+
+            src.setCancelHandler {
+                if fd >= 0 {
+                    close(fd)
+                }
+            }
+
+            src.resume()
+
+            DispatchQueue.main.async { [weak self] in
+                // A newer watcher may have been started meanwhile (rapid navigation);
+                // drop this one instead of clobbering the newer state.
+                guard let self, self.fileDescriptor == -1 else {
+                    src.cancel()
+                    return
+                }
+                self.source = src
+                self.fileDescriptor = fd
             }
         }
-        
-        source?.resume()
     }
-    
+
     func stop() {
         source?.cancel()
         source = nil
