@@ -1983,24 +1983,30 @@ struct DualPaneView: View {
     }
     
     private func performSelectedDelete() {
-        for fileURL in filesToDelete {
-            do {
-                switch deleteIntent {
-                case .trash:
-                    try FileManager.default.trashItem(at: fileURL, resultingItemURL: nil)
-                case .permanent:
-                    try FileManager.default.removeItem(at: fileURL)
+        // File I/O off the main actor: the confirm button closes the alert,
+        // then the trash/remove loop runs detached; UI refresh happens after.
+        let targets = filesToDelete
+        let intent = deleteIntent
+        Task.detached(priority: .userInitiated) {
+            for fileURL in targets {
+                do {
+                    switch intent {
+                    case .trash:
+                        try FileManager.default.trashItem(at: fileURL, resultingItemURL: nil)
+                    case .permanent:
+                        try FileManager.default.removeItem(at: fileURL)
+                    }
+                } catch {
+                    print("Error deleting file \(fileURL.lastPathComponent): \(error)")
                 }
-            } catch {
-                print("Error deleting file \(fileURL.lastPathComponent): \(error)")
+            }
+            await MainActor.run {
+                // Clear selection in active pane only (operations are scoped to active pane).
+                setSelectionInPane([], for: activePane)
+                // Trigger refresh of both panes
+                refreshTrigger = UUID()
             }
         }
-        
-        // Clear selection in active pane only (operations are scoped to active pane).
-        setSelectionInPane([], for: activePane)
-        
-        // Trigger refresh of both panes
-        refreshTrigger = UUID()
     }
     
     private func recordMovedItemsBatch(title: String, pairs: [(from: URL, to: URL)]) {
@@ -2014,7 +2020,9 @@ struct DualPaneView: View {
     
     private func undoLastOperation() {
         guard let batch = undoStack.popLast() else { return }
-        Task {
+        // File I/O off the main actor: `Task { }` inherits MainActor context
+        // and blocked the UI for every moveItem in the loop.
+        Task.detached(priority: .userInitiated) {
             var reversedPairs: [(from: URL, to: URL)] = []
             for entry in batch.entries.reversed() {
                 do {
@@ -2039,7 +2047,9 @@ struct DualPaneView: View {
     
     private func redoLastOperation() {
         guard let batch = redoStack.popLast() else { return }
-        Task {
+        // File I/O off the main actor: `Task { }` inherits MainActor context
+        // and blocked the UI for every moveItem in the loop.
+        Task.detached(priority: .userInitiated) {
             var reappliedPairs: [(from: URL, to: URL)] = []
             for entry in batch.entries {
                 do {
