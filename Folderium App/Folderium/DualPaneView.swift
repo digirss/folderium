@@ -3088,29 +3088,35 @@ struct FilePaneView: View {
         
         print("Loading files from: \(path)")
         
-        Task {
+        // Directory enumeration on network volumes (SMB/NFS) can block for seconds or
+        // hang entirely. Run the I/O off the main actor; only state writes hop back.
+        // path/showHiddenFiles are captured up front so the detached task reads
+        // immutable copies instead of touching actor state mid-flight.
+        let loadPath = path
+        let loadShowHidden = showHiddenFiles
+        Task.detached(priority: .userInitiated) {
             do {
                 let fileManager = FileManager.default
-                
+
                 // Check if the path is accessible before trying to list contents
                 var isDir: ObjCBool = false
-                if !fileManager.fileExists(atPath: path.path, isDirectory: &isDir) {
-                    throw NSError(domain: "FolderiumError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Path does not exist: \(path.path)"])
+                if !fileManager.fileExists(atPath: loadPath.path, isDirectory: &isDir) {
+                    throw NSError(domain: "FolderiumError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Path does not exist: \(loadPath.path)"])
                 }
-                
+
                 if !isDir.boolValue {
-                    throw NSError(domain: "FolderiumError", code: 2, userInfo: [NSLocalizedDescriptionKey: "Path is not a directory: \(path.path)"])
+                    throw NSError(domain: "FolderiumError", code: 2, userInfo: [NSLocalizedDescriptionKey: "Path is not a directory: \(loadPath.path)"])
                 }
-                
+
                 // Check if we have permission to read the directory
-                if !fileManager.isReadableFile(atPath: path.path) {
-                    throw NSError(domain: "FolderiumError", code: 3, userInfo: [NSLocalizedDescriptionKey: "No permission to read directory: \(path.path)"])
+                if !fileManager.isReadableFile(atPath: loadPath.path) {
+                    throw NSError(domain: "FolderiumError", code: 3, userInfo: [NSLocalizedDescriptionKey: "No permission to read directory: \(loadPath.path)"])
                 }
-                
+
                 let contents = try fileManager.contentsOfDirectory(
-                    at: path,
+                    at: loadPath,
                     includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey, .creationDateKey],
-                    options: showHiddenFiles ? [] : [.skipsHiddenFiles]
+                    options: loadShowHidden ? [] : [.skipsHiddenFiles]
                 )
                 
                 let fileItems = contents.map { url in
