@@ -507,51 +507,51 @@ struct DualPaneView: View {
             switch itemID {
             case "openFolders":
                 HStack(spacing: 8) {
-                    explorerToolbarButton("Open Left", systemImage: "folder.badge.plus") { selectFolder(for: .left) }
-                    explorerToolbarButton("Open Right", systemImage: "folder.badge.plus") { selectFolder(for: .right) }
+                    explorerToolbarButton("開啟左窗", systemImage: "folder.badge.plus") { selectFolder(for: .left) }
+                    explorerToolbarButton("開啟右窗", systemImage: "folder.badge.plus") { selectFolder(for: .right) }
                     if paneLayout == .quad {
-                        explorerToolbarButton("Open BL", systemImage: "folder.badge.plus") { selectFolder(for: .bottomLeft) }
-                        explorerToolbarButton("Open BR", systemImage: "folder.badge.plus") { selectFolder(for: .bottomRight) }
+                        explorerToolbarButton("開啟左下", systemImage: "folder.badge.plus") { selectFolder(for: .bottomLeft) }
+                        explorerToolbarButton("開啟右下", systemImage: "folder.badge.plus") { selectFolder(for: .bottomRight) }
                     }
                 }
             case "layout":
                 paneLayoutPicker
             case "clipboard":
                 HStack(spacing: 8) {
-                    explorerToolbarButton("Copy", systemImage: "doc.on.doc", shortcutHint: toolbarShortcutText(for: .copySelected)) { copySelectedFiles() }
+                    explorerToolbarButton("複製", systemImage: "doc.on.doc", shortcutHint: toolbarShortcutText(for: .copySelected)) { copySelectedFiles() }
                         .disabled(activePaneSelection.isEmpty)
-                    explorerToolbarButton("Cut", systemImage: "scissors", shortcutHint: toolbarShortcutText(for: .cutSelected)) { cutSelectedFiles() }
+                    explorerToolbarButton("剪下", systemImage: "scissors", shortcutHint: toolbarShortcutText(for: .cutSelected)) { cutSelectedFiles() }
                         .disabled(activePaneSelection.isEmpty)
-                    explorerToolbarButton("Paste", systemImage: "doc.on.clipboard", shortcutHint: toolbarShortcutText(for: .pasteIntoActivePane)) { pasteFiles() }
+                    explorerToolbarButton("貼上", systemImage: "doc.on.clipboard", shortcutHint: toolbarShortcutText(for: .pasteIntoActivePane)) { pasteFiles() }
                         .disabled(!clipboardHasFiles)
-                    explorerToolbarButton("New Folder", systemImage: "folder.badge.plus", shortcutHint: toolbarShortcutText(for: .newFolderInActivePane)) {
+                    explorerToolbarButton("新資料夾", systemImage: "folder.badge.plus", shortcutHint: toolbarShortcutText(for: .newFolderInActivePane)) {
                         createNewFolderInActivePane()
                     }
                     .disabled(!canCreateFolderInActivePane)
                 }
             case "fileOps":
                 HStack(spacing: 8) {
-                    explorerToolbarButton("Rename", systemImage: "pencil", shortcutHint: toolbarShortcutText(for: .renameSelected)) { renameSelectedItem() }
+                    explorerToolbarButton("重新命名", systemImage: "pencil", shortcutHint: toolbarShortcutText(for: .renameSelected)) { renameSelectedItem() }
                         .disabled(activePaneSelection.count != 1)
-                    explorerToolbarButton("Trash", systemImage: "trash", shortcutHint: toolbarShortcutText(for: .deleteSelected)) { trashSelectedFiles() }
+                    explorerToolbarButton("垃圾桶", systemImage: "trash", shortcutHint: toolbarShortcutText(for: .deleteSelected)) { trashSelectedFiles() }
                         .disabled(activePaneSelection.isEmpty)
-                    explorerToolbarButton("Compress", systemImage: "archivebox") { compressSelectedFiles() }
+                    explorerToolbarButton("壓縮", systemImage: "archivebox") { compressSelectedFiles() }
                         .disabled(activePaneSelection.isEmpty)
                 }
             case "history":
                 HStack(spacing: 8) {
-                    explorerToolbarButton("Undo", systemImage: "arrow.uturn.backward", shortcutHint: toolbarShortcutText(for: .undoLastOperation)) { undoLastOperation() }
+                    explorerToolbarButton("復原", systemImage: "arrow.uturn.backward", shortcutHint: toolbarShortcutText(for: .undoLastOperation)) { undoLastOperation() }
                         .disabled(undoStack.isEmpty)
-                    explorerToolbarButton("Redo", systemImage: "arrow.uturn.forward", shortcutHint: toolbarShortcutText(for: .redoLastOperation)) { redoLastOperation() }
+                    explorerToolbarButton("重做", systemImage: "arrow.uturn.forward", shortcutHint: toolbarShortcutText(for: .redoLastOperation)) { redoLastOperation() }
                         .disabled(redoStack.isEmpty)
                 }
             case "hiddenFiles":
-                explorerToolbarButton(showHiddenFiles ? "Hide Hidden" : "Show Hidden", systemImage: showHiddenFiles ? "eye.slash" : "eye") {
+                explorerToolbarButton(showHiddenFiles ? "隱藏隱藏檔" : "顯示隱藏檔", systemImage: showHiddenFiles ? "eye.slash" : "eye") {
                     showHiddenFiles.toggle()
                 }
             case "columns":
                 Menu {
-                    Section("Show / Hide Columns") {
+                    Section("顯示 / 隱藏欄位") {
                         ForEach(FilePaneView.FileColumn.allCases, id: \.self) { column in
                             Button {
                                 toggleToolbarColumnVisibility(column)
@@ -566,11 +566,11 @@ struct DualPaneView: View {
 
                     Divider()
 
-                    Button("Reset Columns") {
+                    Button("重設欄位") {
                         resetToolbarColumns()
                     }
                 } label: {
-                    Label("Columns", systemImage: "line.3.horizontal.decrease.circle")
+                    Label("欄位", systemImage: "line.3.horizontal.decrease.circle")
                 }
                 .menuStyle(.borderlessButton)
             default:
@@ -789,7 +789,7 @@ struct DualPaneView: View {
         }
         .pickerStyle(.segmented)
         .frame(width: 130)
-        .help("Pane layout: 1 / 2 / 2×2")
+        .help("版面配置：單窗 / 雙窗 / 2×2")
     }
     
     private func setPaneLayout(_ newValue: PaneLayout) {
