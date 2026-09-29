@@ -50,6 +50,8 @@ final class FileManager: @unchecked Sendable {
     var errorMessage: String?
     var files: [FileItem] = []
     var selection = Set<URL>()
+    var keyboardSelectionAnchor: URL?
+    var keyboardSelectionFocus: URL?
     var directoryLoadID = UUID()
     var directoryLoadTask: Task<Void, Never>?
     var directoryLoadTimeoutTask: Task<Void, Never>?

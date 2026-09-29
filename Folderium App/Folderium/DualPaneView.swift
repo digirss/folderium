@@ -1480,7 +1480,7 @@ struct DualPaneView: View {
         var result: [String] = []
         for path in paths {
             let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty, !seen.contains(trimmed) else { continue }
+            guard trimmed.hasPrefix("/"), !seen.contains(trimmed) else { continue }
             // Offline/unmounted folders are still valid pins. Never probe storage
             // from SwiftUI state/render paths or silently erase unavailable pins.
             seen.insert(trimmed)
@@ -2135,6 +2135,7 @@ struct FilePaneView: View {
     @State private var directoryLoadID = UUID()
     @State private var directoryLoadTask: Task<Void, Never>?
     @State private var directoryLoadTimeoutTask: Task<Void, Never>?
+    @State private var cloudLinkNavigationID = UUID()
     @State private var directoryWatcher: DirectoryWatcher?
     @State private var watcherDebounceTask: Task<Void, Never>?
     @State private var inlineRenamingURL: URL?
@@ -2284,6 +2285,7 @@ struct FilePaneView: View {
             startDirectoryWatcher()
         }
         .onChange(of: path) { _, _ in
+            cloudLinkNavigationID = UUID()
             // Clear selection when path changes
             selection = []
             keyboardSelectionAnchor = nil
@@ -2346,6 +2348,7 @@ struct FilePaneView: View {
         }
         .onDisappear {
             stopDirectoryWatcher()
+            cloudLinkNavigationID = UUID()
             directoryLoadID = UUID()
             directoryLoadTask?.cancel()
             directoryLoadTimeoutTask?.cancel()
@@ -3191,31 +3194,39 @@ struct FilePaneView: View {
         
         if file.isDirectory {
             // Special handling for OneDrive and other cloud storage folders
-            if file.name.lowercased().contains("onedrive") || 
+            if file.isSymbolicLink && (file.name.lowercased().contains("onedrive") ||
                file.name.lowercased().contains("dropbox") || 
                file.name.lowercased().contains("google drive") ||
-               file.name.lowercased().contains("icloud") {
+               file.name.lowercased().contains("icloud")) {
                 
-                // Try to resolve symbolic links for cloud storage folders
-                let fileManager = FileManager.default
-                do {
-                    let resolvedURL = try fileManager.destinationOfSymbolicLink(atPath: file.url.path)
-                    let targetURL = URL(fileURLWithPath: resolvedURL)
-                    
-                    // Check if the resolved target is actually a directory
-                    var isDir: ObjCBool = false
-                    if fileManager.fileExists(atPath: targetURL.path, isDirectory: &isDir) && isDir.boolValue {
-                        print("Cloud storage folder resolved to: \(targetURL)")
-                        selection = []
-                        path = targetURL
+                // Resolving an offline/cloud symlink may block indefinitely.
+                // Keep both readlink and target validation off the UI thread.
+                let sourceURL = file.url
+                let originalPath = path
+                let requestID = UUID()
+                cloudLinkNavigationID = requestID
+                Task.detached(priority: .userInitiated) {
+                    let fileManager = FileManager.default
+                    let targetURL: URL?
+                    if let destination = try? fileManager.destinationOfSymbolicLink(atPath: sourceURL.path) {
+                        let candidate = destination.hasPrefix("/")
+                            ? URL(fileURLWithPath: destination, isDirectory: true)
+                            : sourceURL.deletingLastPathComponent().appendingPathComponent(destination, isDirectory: true)
+                        var isDir: ObjCBool = false
+                        targetURL = fileManager.fileExists(atPath: candidate.path, isDirectory: &isDir) && isDir.boolValue
+                            ? candidate : nil
                     } else {
-                        print("Cloud storage folder resolved but target is not a directory, opening in Finder")
-                        NSWorkspace.shared.activateFileViewerSelecting([file.url])
+                        targetURL = nil
                     }
-                } catch {
-                    print("Could not resolve symbolic link for cloud storage folder: \(error)")
-                    print("Opening in Finder instead")
-                    NSWorkspace.shared.activateFileViewerSelecting([file.url])
+                    await MainActor.run {
+                        guard self.cloudLinkNavigationID == requestID, self.path == originalPath else { return }
+                        if let targetURL {
+                            self.selection = []
+                            self.path = targetURL
+                        } else {
+                            NSWorkspace.shared.activateFileViewerSelecting([sourceURL])
+                        }
+                    }
                 }
             } else {
                 // Clear selection when navigating to folder
@@ -3238,6 +3249,9 @@ struct FilePaneView: View {
         isLoading = true
         errorMessage = nil
         files = []
+        selection = []
+        keyboardSelectionAnchor = nil
+        keyboardSelectionFocus = nil
         applyFiltersAndSorting()
         
         print("Loading files from: \(path)")

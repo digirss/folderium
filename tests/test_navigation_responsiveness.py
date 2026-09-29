@@ -22,6 +22,22 @@ def body(source, signature):
 
 
 class NavigationResponsivenessTests(unittest.TestCase):
+    def test_directory_load_clears_invisible_selection_before_async_work(self):
+        source = SOURCE.read_text()
+        load = body(source, 'private func loadFiles()')
+        before_io = load.split('Task.detached', 1)[0]
+        self.assertIn('selection = []', before_io)
+        self.assertIn('keyboardSelectionAnchor = nil', before_io)
+        self.assertIn('keyboardSelectionFocus = nil', before_io)
+
+    def test_cloud_named_folder_double_click_does_not_do_filesystem_io_on_main(self):
+        source = SOURCE.read_text()
+        handler = body(source, 'private func handleDoubleClick(_ file: FileItem)')
+        self.assertIn('if file.isSymbolicLink', handler)
+        self.assertIn('Task.detached', handler)
+        self.assertIn('destinationOfSymbolicLink', handler)
+        self.assertNotIn('FileManager.default', handler.split('Task.detached', 1)[0])
+
     def test_toolbar_permission_is_cached_not_io_during_render(self):
         source = SOURCE.read_text()
         self.assertIn('@State private var writableFolderPath: String?', source)
@@ -46,6 +62,7 @@ class NavigationResponsivenessTests(unittest.TestCase):
         source = SOURCE.read_text()
         sanitize = body(source, 'private func sanitizePinnedPaths(_ paths:')
         self.assertNotIn('FileManager', sanitize)
+        self.assertIn('trimmed.hasPrefix("/")', sanitize)
         pinned = body(source, 'private var pinnedLocations:')
         self.assertIn('URL(fileURLWithPath: path, isDirectory: true)', pinned)
 
