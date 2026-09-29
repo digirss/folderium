@@ -23,6 +23,8 @@ class QuickAccessItemVisibilityTests(unittest.TestCase):
     def test_menu_can_hide_and_restore_a_shortcut_without_losing_other_choices(self):
         source = SOURCE.read_text()
         self.assert_source_has(source, 'Menu {\n                        ForEach(quickLocations)')
+        self.assert_source_has(source, '.frame(maxWidth: .infinity, alignment: .leading)\n            .padding(.horizontal, 12)')
+        self.assert_source_has(source, '.menuIndicator(.hidden)')
         self.assert_source_has(source, 'Toggle(location.name, isOn: Binding(')
         self.assert_source_has(source, 'setQuickAccessVisible(location.name, visible: isVisible)')
         self.assert_source_has(source, 'hiddenQuickAccessItemsRaw = hidden.sorted().joined(separator: ",")')

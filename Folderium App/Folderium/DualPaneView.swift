@@ -963,6 +963,7 @@ struct DualPaneView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 12)
             .padding(.top, 10)
             .padding(.bottom, 6)
@@ -989,6 +990,7 @@ struct DualPaneView: View {
                             .contentShape(Rectangle())
                     }
                     .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
                     .accessibilityLabel("Choose Quick Access shortcuts")
                     .help("Show or hide Quick Access shortcuts")
 
