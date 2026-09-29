@@ -1302,27 +1302,40 @@ struct DualPaneView: View {
         panel.message = "Choose a folder to grant Folderium access."
         
         if panel.runModal() == .OK, let selectedURL = panel.url {
-            let didAccess = selectedURL.startAccessingSecurityScopedResource()
-            guard didAccess else {
-                print("Failed to access security-scoped resource: \(selectedURL.path)")
-                return
-            }
-            
-            switch pane {
-            case .left:
-                leftPath = selectedURL
-                leftCurrentPathRaw = selectedURL.path
-                SandboxAccessManager.saveBookmark(for: .left, url: selectedURL)
-            case .right:
-                rightPath = selectedURL
-                rightCurrentPathRaw = selectedURL.path
-                SandboxAccessManager.saveBookmark(for: .right, url: selectedURL)
-            case .bottomLeft:
-                bottomLeftPath = selectedURL
-                bottomLeftCurrentPathRaw = selectedURL.path
-            case .bottomRight:
-                bottomRightPath = selectedURL
-                bottomRightCurrentPathRaw = selectedURL.path
+            // startAccessing + bookmarkData can hit slow storage; keep them off
+            // the UI thread and only apply state once access is confirmed.
+            Task {
+                let granted = await Task.detached(priority: .userInitiated) { () -> Bool in
+                    selectedURL.startAccessingSecurityScopedResource()
+                }.value
+                guard granted else {
+                    print("Failed to access security-scoped resource: \(selectedURL.path)")
+                    return
+                }
+                
+                await MainActor.run {
+                    switch pane {
+                    case .left:
+                        leftPath = selectedURL
+                        leftCurrentPathRaw = selectedURL.path
+                    case .right:
+                        rightPath = selectedURL
+                        rightCurrentPathRaw = selectedURL.path
+                    case .bottomLeft:
+                        bottomLeftPath = selectedURL
+                        bottomLeftCurrentPathRaw = selectedURL.path
+                    case .bottomRight:
+                        bottomRightPath = selectedURL
+                        bottomRightCurrentPathRaw = selectedURL.path
+                    }
+                }
+                
+                let bookmarkPane: PaneBookmarkKey? = (pane == .left) ? .left : (pane == .right) ? .right : nil
+                if let bookmarkPane {
+                    await Task.detached(priority: .userInitiated) {
+                        SandboxAccessManager.saveBookmark(for: bookmarkPane, url: selectedURL)
+                    }.value
+                }
             }
         }
     }
@@ -1671,37 +1684,45 @@ struct DualPaneView: View {
                         print("Pasting \(urls.count) files to \(targetDirectory.path)")
                         
                         Task {
-                            do {
+                            // Moving/copying can block on slow volumes — run the
+                            // I/O pipeline off the main actor; hop back for UI only.
+                            let outcome = await Task.detached(priority: .userInitiated) { () -> (pairs: [(from: URL, to: URL)], error: Error?) in
                                 var movedPairs: [(from: URL, to: URL)] = []
-                                for url in urls {
-                                    let destinationURL = targetDirectory.appendingPathComponent(url.lastPathComponent)
-                                    let finalDestinationURL = resolveConflictDestination(
-                                        sourceURL: url,
-                                        destinationURL: destinationURL,
-                                        in: targetDirectory
-                                    )
-                                    guard let finalDestinationURL else { continue }
-                                    
-                                    try FileManager.default.moveItem(at: url, to: finalDestinationURL)
-                                    movedPairs.append((from: url, to: finalDestinationURL))
-                                    print("Moved: \(url.lastPathComponent) to \(finalDestinationURL.lastPathComponent)")
-                                }
-                                
-                                await MainActor.run {
-                                    // Refresh both panes
-                                    refreshTrigger = UUID()
-                                    if !movedPairs.isEmpty {
-                                        recordMovedItemsBatch(title: "Move via Paste", pairs: movedPairs)
+                                do {
+                                    for url in urls {
+                                        let destinationURL = targetDirectory.appendingPathComponent(url.lastPathComponent)
+                                        let finalDestinationURL = await resolveConflictDestination(
+                                            sourceURL: url,
+                                            destinationURL: destinationURL,
+                                            in: targetDirectory
+                                        )
+                                        guard let finalDestinationURL else { continue }
+                                        
+                                        try FileManager.default.moveItem(at: url, to: finalDestinationURL)
+                                        movedPairs.append((from: url, to: finalDestinationURL))
+                                        print("Moved: \(url.lastPathComponent) to \(finalDestinationURL.lastPathComponent)")
                                     }
-                                    
-                                    // Reset cut operation after paste
-                                    isCutOperation = false
+                                    return (movedPairs, nil)
+                                } catch {
+                                    return (movedPairs, error)
+                                }
+                            }.value
+                            
+                            await MainActor.run {
+                                // Refresh both panes
+                                refreshTrigger = UUID()
+                                if !outcome.pairs.isEmpty {
+                                    recordMovedItemsBatch(title: "Move via Paste", pairs: outcome.pairs)
                                 }
                                 
-                                print("Paste operation completed successfully")
-                            } catch {
-                                print("Error pasting files: \(error)")
+                                // Reset cut operation after paste
+                                isCutOperation = false
+                                if let error = outcome.error {
+                                    print("Error pasting files: \(error)")
+                                }
                             }
+                            
+                            print("Paste operation completed successfully")
                         }
                     } else {
                         // 複製一律走 TransferQueue(PRD §3.1:所有複製入口同一佇列)
@@ -1741,12 +1762,15 @@ struct DualPaneView: View {
             return false
         }
         
-        private func getUniqueDestinationURL(for url: URL, in directory: URL) -> URL {
+        private func getUniqueDestinationURL(for url: URL, in directory: URL) async -> URL {
             let fileManager = FileManager.default
             var destinationURL = url
             
-            // If file doesn't exist, return original URL
-            if !fileManager.fileExists(atPath: destinationURL.path) {
+            // If file doesn't exist, return original URL (probe off the UI thread)
+            let baseExists = await Task.detached(priority: .userInitiated) {
+                fileManager.fileExists(atPath: destinationURL.path)
+            }.value
+            if !baseExists {
                 return destinationURL
             }
             
@@ -1755,7 +1779,7 @@ struct DualPaneView: View {
             let fileExtension = url.pathExtension
             var counter = 1
             
-            repeat {
+            while true {
                 let newFilename: String
                 if fileExtension.isEmpty {
                     newFilename = "\(filename) (\(counter))"
@@ -1764,7 +1788,13 @@ struct DualPaneView: View {
                 }
                 destinationURL = directory.appendingPathComponent(newFilename)
                 counter += 1
-            } while fileManager.fileExists(atPath: destinationURL.path)
+                let taken = await Task.detached(priority: .userInitiated) {
+                    fileManager.fileExists(atPath: destinationURL.path)
+                }.value
+                if !taken {
+                    break
+                }
+            }
             
             print("File conflict resolved: \(url.lastPathComponent) -> \(destinationURL.lastPathComponent)")
             return destinationURL
@@ -1776,8 +1806,11 @@ struct DualPaneView: View {
             case keepBoth
         }
         
-        private func resolveConflictDestination(sourceURL: URL, destinationURL: URL, in directory: URL) -> URL? {
-            guard FileManager.default.fileExists(atPath: destinationURL.path) else {
+        private func resolveConflictDestination(sourceURL: URL, destinationURL: URL, in directory: URL) async -> URL? {
+            let destExists = await Task.detached(priority: .userInitiated) {
+                FileManager.default.fileExists(atPath: destinationURL.path)
+            }.value
+            guard destExists else {
                 return destinationURL
             }
             
@@ -1786,15 +1819,18 @@ struct DualPaneView: View {
             case .skip:
                 return nil
             case .keepBoth:
-                return getUniqueDestinationURL(for: destinationURL, in: directory)
+                return await getUniqueDestinationURL(for: destinationURL, in: directory)
             case .replace:
-                do {
-                    try FileManager.default.removeItem(at: destinationURL)
-                    return destinationURL
-                } catch {
-                    print("Failed to replace destination \(destinationURL.path): \(error)")
-                    return nil
-                }
+                let removed: Bool = await Task.detached(priority: .userInitiated) { () -> Bool in
+                    do {
+                        try FileManager.default.removeItem(at: destinationURL)
+                        return true
+                    } catch {
+                        print("Failed to replace destination \(destinationURL.path): \(error)")
+                        return false
+                    }
+                }.value
+                return removed ? destinationURL : nil
             }
         }
         
@@ -2067,21 +2103,31 @@ struct DualPaneView: View {
     private func createNewFolderInActivePane() {
         let targetDirectory = activePanePath
         let baseName = "New Folder"
-        var candidateName = baseName
-        var counter = 1
         
-        while FileManager.default.fileExists(atPath: targetDirectory.appendingPathComponent(candidateName).path) {
-            candidateName = "\(baseName) \(counter)"
-            counter += 1
-        }
-        
-        let newFolderURL = targetDirectory.appendingPathComponent(candidateName)
-        do {
-            try FileManager.default.createDirectory(at: newFolderURL, withIntermediateDirectories: false)
-            setSelectionInPane([newFolderURL], for: activePane)
-            refreshTrigger = UUID()
-        } catch {
-            print("Error creating folder in active pane: \(error)")
+        // Name probing + mkdir can stall on slow volumes — keep off the UI thread.
+        Task {
+            let created = await Task.detached(priority: .userInitiated) { () -> URL? in
+                var candidateName = baseName
+                var counter = 1
+                
+                while FileManager.default.fileExists(atPath: targetDirectory.appendingPathComponent(candidateName).path) {
+                    candidateName = "\(baseName) \(counter)"
+                    counter += 1
+                }
+                
+                let newFolderURL = targetDirectory.appendingPathComponent(candidateName)
+                do {
+                    try FileManager.default.createDirectory(at: newFolderURL, withIntermediateDirectories: false)
+                    return newFolderURL
+                } catch {
+                    print("Error creating folder in active pane: \(error)")
+                    return nil
+                }
+            }.value
+            if let newFolderURL = created {
+                setSelectionInPane([newFolderURL], for: activePane)
+                refreshTrigger = UUID()
+            }
         }
     }
 }
@@ -3139,21 +3185,33 @@ struct FilePaneView: View {
             return
         }
 
-        do {
-            try FileManager.default.moveItem(at: sourceURL, to: destinationURL)
-            onRecordMoveBatch("Rename", [(from: sourceURL, to: destinationURL)])
-            selection = [destinationURL]
-            cancelInlineRename()
-            loadFiles()
-            onRefresh()
-        } catch {
-            let alert = NSAlert()
-            alert.messageText = "Rename Failed"
-            alert.informativeText = error.localizedDescription
-            alert.addButton(withTitle: "OK")
-            alert.alertStyle = .warning
-            alert.runModal()
-            cancelInlineRename()
+        // Renaming can block on slow volumes; do the move off the main actor
+        // and only update UI state when it returns.
+        Task {
+            let renameResult = await Task.detached(priority: .userInitiated) { () -> Error? in
+                do {
+                    try FileManager.default.moveItem(at: sourceURL, to: destinationURL)
+                    return nil
+                } catch {
+                    return error
+                }
+            }.value
+
+            if renameResult == nil {
+                onRecordMoveBatch("Rename", [(from: sourceURL, to: destinationURL)])
+                selection = [destinationURL]
+                cancelInlineRename()
+                loadFiles()
+                onRefresh()
+            } else {
+                let alert = NSAlert()
+                alert.messageText = "Rename Failed"
+                alert.informativeText = (renameResult as NSError?)?.localizedDescription ?? "Unknown error"
+                alert.addButton(withTitle: "OK")
+                alert.alertStyle = .warning
+                alert.runModal()
+                cancelInlineRename()
+            }
         }
     }
 
@@ -3684,55 +3742,66 @@ struct FilePaneView: View {
                 return
             }
             
-            do {
+            // Moves touch slow volumes; run the whole non-UI move pipeline off the
+            // main actor and hop back only for alerts/refresh.
+            let moveOutcome = await Task.detached(priority: .userInitiated) { () -> (pairs: [(from: URL, to: URL)], error: Error?) in
                 var movedPairs: [(from: URL, to: URL)] = []
-                for sourceURL in sourceURLs {
-                    let destinationURL = destinationFolder.appendingPathComponent(sourceURL.lastPathComponent)
-                    
-                    // Prevent invalid no-op/self/descendant moves.
-                    var isDirectory: ObjCBool = false
-                    if FileManager.default.fileExists(atPath: sourceURL.path, isDirectory: &isDirectory) {
-                        if destinationURL.path == sourceURL.path {
-                            print("Skipping no-op move for \(sourceURL.lastPathComponent)")
+                do {
+                    for sourceURL in sourceURLs {
+                        let destinationURL = destinationFolder.appendingPathComponent(sourceURL.lastPathComponent)
+                        
+                        // Prevent invalid no-op/self/descendant moves (no slow probes on UI thread).
+                        var isDirectory: ObjCBool = false
+                        if FileManager.default.fileExists(atPath: sourceURL.path, isDirectory: &isDirectory) {
+                            if destinationURL.path == sourceURL.path {
+                                print("Skipping no-op move for \(sourceURL.lastPathComponent)")
+                                continue
+                            }
+                            if isDirectory.boolValue && destinationURL.path.hasPrefix(sourceURL.path + "/") {
+                                print("Skipping invalid move into descendant for \(sourceURL.lastPathComponent)")
+                                continue
+                            }
+                        }
+                        
+                        guard let finalDestinationURL = await resolveDropConflict(sourceURL: sourceURL, destinationURL: destinationURL) else {
                             continue
                         }
-                        if isDirectory.boolValue && destinationURL.path.hasPrefix(sourceURL.path + "/") {
-                            print("Skipping invalid move into descendant for \(sourceURL.lastPathComponent)")
-                            continue
-                        }
+                        
+                        try FileManager.default.moveItem(at: sourceURL, to: finalDestinationURL)
+                        movedPairs.append((from: sourceURL, to: finalDestinationURL))
+                        print("Moved: \(sourceURL.lastPathComponent) to \(finalDestinationURL.lastPathComponent)")
                     }
-                    
-                    guard let finalDestinationURL = await resolveDropConflict(sourceURL: sourceURL, destinationURL: destinationURL) else {
-                        continue
-                    }
-                    
-                    try FileManager.default.moveItem(at: sourceURL, to: finalDestinationURL)
-                    movedPairs.append((from: sourceURL, to: finalDestinationURL))
-                    print("Moved: \(sourceURL.lastPathComponent) to \(finalDestinationURL.lastPathComponent)")
+                    return (movedPairs, nil)
+                } catch {
+                    return (movedPairs, error)
                 }
-                
-                await MainActor.run {
-                    // Refresh the file list
-                    loadFiles()
-                    onRefresh()
-                    if !movedPairs.isEmpty {
-                        onRecordMoveBatch("Move via Drag and Drop", movedPairs)
-                    }
+            }.value
+            
+            await MainActor.run {
+                // Refresh the file list
+                loadFiles()
+                onRefresh()
+                if !moveOutcome.pairs.isEmpty {
+                    onRecordMoveBatch("Move via Drag and Drop", moveOutcome.pairs)
                 }
-                
-                print("Drop operation completed successfully")
-            } catch {
-                print("Error during drop operation: \(error)")
+                if let error = moveOutcome.error {
+                    print("Error during drop operation: \(error)")
+                }
             }
+            
+            print("Drop operation completed successfully")
         }
     }
     
-    private func getUniqueDestinationURL(for url: URL) -> URL {
+    private func getUniqueDestinationURL(for url: URL) async -> URL {
         let fileManager = FileManager.default
         var destinationURL = url
         
-        // If file doesn't exist, return original URL
-        if !fileManager.fileExists(atPath: destinationURL.path) {
+        // If file doesn't exist, return original URL (probe off the UI thread)
+        let baseExists = await Task.detached(priority: .userInitiated) {
+            fileManager.fileExists(atPath: destinationURL.path)
+        }.value
+        if !baseExists {
             return destinationURL
         }
         
@@ -3742,7 +3811,7 @@ struct FilePaneView: View {
         let fileExtension = url.pathExtension
         var counter = 1
         
-        repeat {
+        while true {
             let newFilename: String
             if fileExtension.isEmpty {
                 newFilename = "\(filename) (\(counter))"
@@ -3751,7 +3820,13 @@ struct FilePaneView: View {
             }
             destinationURL = directory.appendingPathComponent(newFilename)
             counter += 1
-        } while fileManager.fileExists(atPath: destinationURL.path)
+            let taken = await Task.detached(priority: .userInitiated) {
+                fileManager.fileExists(atPath: destinationURL.path)
+            }.value
+            if !taken {
+                break
+            }
+        }
         
         print("File conflict resolved: \(url.lastPathComponent) -> \(destinationURL.lastPathComponent)")
         return destinationURL
@@ -3764,7 +3839,10 @@ struct FilePaneView: View {
     }
     
     private func resolveDropConflict(sourceURL: URL, destinationURL: URL) async -> URL? {
-        guard FileManager.default.fileExists(atPath: destinationURL.path) else {
+        let destExists = await Task.detached(priority: .userInitiated) {
+            FileManager.default.fileExists(atPath: destinationURL.path)
+        }.value
+        guard destExists else {
             return destinationURL
         }
         
@@ -3773,15 +3851,18 @@ struct FilePaneView: View {
         case .skip:
             return nil
         case .keepBoth:
-            return getUniqueDestinationURL(for: destinationURL)
+            return await getUniqueDestinationURL(for: destinationURL)
         case .replace:
-            do {
-                try FileManager.default.removeItem(at: destinationURL)
-                return destinationURL
-            } catch {
-                print("Failed to replace dropped file destination: \(error)")
-                return nil
-            }
+            let removed: Bool = await Task.detached(priority: .userInitiated) { () -> Bool in
+                do {
+                    try FileManager.default.removeItem(at: destinationURL)
+                    return true
+                } catch {
+                    print("Failed to replace dropped file destination: \(error)")
+                    return false
+                }
+            }.value
+            return removed ? destinationURL : nil
         }
     }
     
@@ -4962,20 +5043,41 @@ struct FileContextMenu: View {
     }
     
     private func moveToTrash() {
-        do {
-            try FileManager.default.trashItem(at: file.url, resultingItemURL: nil)
+        // Trashing hits the filesystem (and can stall on slow volumes) — do it
+        // off the main actor, then refresh on main.
+        let targetURL = file.url
+        Task {
+            let trashError = await Task.detached(priority: .userInitiated) { () -> Error? in
+                do {
+                    try FileManager.default.trashItem(at: targetURL, resultingItemURL: nil)
+                    return nil
+                } catch {
+                    return error
+                }
+            }.value
+            if let trashError {
+                print("Error moving to trash: \(trashError)")
+            }
             onFileOperation() // Refresh the file list
-        } catch {
-            print("Error moving to trash: \(error)")
         }
     }
     
     private func deleteFile() {
-        do {
-            try FileManager.default.removeItem(at: file.url)
+        // Deletion can stall on slow volumes — keep it off the main actor.
+        let targetURL = file.url
+        Task {
+            let deleteError = await Task.detached(priority: .userInitiated) { () -> Error? in
+                do {
+                    try FileManager.default.removeItem(at: targetURL)
+                    return nil
+                } catch {
+                    return error
+                }
+            }.value
+            if let deleteError {
+                print("Error deleting file: \(deleteError)")
+            }
             onFileOperation() // Refresh the file list
-        } catch {
-            print("Error deleting file: \(error)")
         }
     }
 }
@@ -5213,56 +5315,78 @@ struct EmptyAreaContextMenu: View {
     
     private func createNewFolder() {
         let folderName = "New Folder"
-        var finalName = folderName
-        var counter = 1
+        let targetPath = currentPath
         
-        // Find a unique name
-        while FileManager.default.fileExists(atPath: currentPath.appendingPathComponent(finalName).path) {
-            finalName = "\(folderName) \(counter)"
-            counter += 1
-        }
-        
-        do {
-            try FileManager.default.createDirectory(
-                at: currentPath.appendingPathComponent(finalName),
-                withIntermediateDirectories: true
-            )
-            onFileOperation()
-        } catch {
-            print("Error creating folder: \(error)")
+        // Name probing + mkdir can stall on slow volumes — keep off the UI thread.
+        Task {
+            let ok = await Task.detached(priority: .userInitiated) { () -> Bool in
+                var finalName = folderName
+                var counter = 1
+                
+                // Find a unique name
+                while FileManager.default.fileExists(atPath: targetPath.appendingPathComponent(finalName).path) {
+                    finalName = "\(folderName) \(counter)"
+                    counter += 1
+                }
+                
+                do {
+                    try FileManager.default.createDirectory(
+                        at: targetPath.appendingPathComponent(finalName),
+                        withIntermediateDirectories: true
+                    )
+                    return true
+                } catch {
+                    print("Error creating folder: \(error)")
+                    return false
+                }
+            }.value
+            if ok {
+                onFileOperation()
+            }
         }
     }
     
     private func createNewFile(named fileName: String = "New File.txt") {
-        var finalName = fileName
-        var counter = 1
+        let targetPath = currentPath
         
-        // If no extension provided, add .txt
-        if !fileName.contains(".") {
-            finalName = "\(fileName).txt"
-        }
-        
-        // Find a unique name
-        while FileManager.default.fileExists(atPath: currentPath.appendingPathComponent(finalName).path) {
-            if let lastDotIndex = fileName.lastIndex(of: ".") {
-                let nameWithoutExt = String(fileName[..<lastDotIndex])
-                let ext = String(fileName[lastDotIndex...])
-                finalName = "\(nameWithoutExt) \(counter)\(ext)"
-            } else {
-                finalName = "\(fileName) \(counter).txt"
+        // Name probing + file creation can stall on slow volumes — off the UI thread.
+        Task {
+            let ok = await Task.detached(priority: .userInitiated) { () -> Bool in
+                var finalName = fileName
+                var counter = 1
+                
+                // If no extension provided, add .txt
+                if !fileName.contains(".") {
+                    finalName = "\(fileName).txt"
+                }
+                
+                // Find a unique name
+                while FileManager.default.fileExists(atPath: targetPath.appendingPathComponent(finalName).path) {
+                    if let lastDotIndex = fileName.lastIndex(of: ".") {
+                        let nameWithoutExt = String(fileName[..<lastDotIndex])
+                        let ext = String(fileName[lastDotIndex...])
+                        finalName = "\(nameWithoutExt) \(counter)\(ext)"
+                    } else {
+                        finalName = "\(fileName) \(counter).txt"
+                    }
+                    counter += 1
+                }
+                
+                do {
+                    try "".write(
+                        to: targetPath.appendingPathComponent(finalName),
+                        atomically: true,
+                        encoding: .utf8
+                    )
+                    return true
+                } catch {
+                    print("Error creating file: \(error)")
+                    return false
+                }
+            }.value
+            if ok {
+                onFileOperation()
             }
-            counter += 1
-        }
-        
-        do {
-            try "".write(
-                to: currentPath.appendingPathComponent(finalName),
-                atomically: true,
-                encoding: .utf8
-            )
-            onFileOperation()
-        } catch {
-            print("Error creating file: \(error)")
         }
     }
     
