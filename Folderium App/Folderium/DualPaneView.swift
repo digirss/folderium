@@ -84,6 +84,7 @@ struct DualPaneView: View {
     // (global showNavigationPane still hides all sidebars at once).
     @AppStorage("folderium.quickAccessHiddenPanes") private var hiddenQuickAccessRaw: String = ""
     @State private var hiddenQuickAccessPanes: Set<ActivePane> = []
+    @AppStorage("folderium.quickAccessHiddenItems") private var hiddenQuickAccessItemsRaw: String = ""
     @State private var paneSplitRatio: CGFloat = 0.5
     @State private var sidebarDragStartWidth: CGFloat?
     @State private var paneSplitDragStartLeftWidth: CGFloat?
@@ -301,6 +302,20 @@ struct DualPaneView: View {
             QuickLocation(name: "Music", icon: "music.note", url: firstURL(.musicDirectory)),
             QuickLocation(name: "Movies", icon: "film", url: firstURL(.moviesDirectory))
         ]
+    }
+
+    private var hiddenQuickAccessNames: Set<String> {
+        Set(hiddenQuickAccessItemsRaw.split(separator: ",").map(String.init))
+    }
+
+    private func setQuickAccessVisible(_ name: String, visible: Bool) {
+        var hidden = hiddenQuickAccessNames
+        if visible {
+            hidden.remove(name)
+        } else {
+            hidden.insert(name)
+        }
+        hiddenQuickAccessItemsRaw = hidden.sorted().joined(separator: ",")
     }
     
     nonisolated private static func loadMountedVolumes() -> [QuickLocation] {
@@ -952,26 +967,52 @@ struct DualPaneView: View {
             .padding(.top, 10)
             .padding(.bottom, 6)
             .overlay(alignment: .topTrailing) {
-                Button {
-                    withAnimation(.easeInOut(duration: 0.15)) {
-                        _ = hiddenQuickAccessPanes.insert(pane)
+                HStack(spacing: 2) {
+                    Menu {
+                        ForEach(quickLocations) { location in
+                            Toggle(location.name, isOn: Binding(
+                                get: { !hiddenQuickAccessNames.contains(location.name) },
+                                set: { isVisible in
+                                    setQuickAccessVisible(location.name, visible: isVisible)
+                                }
+                            ))
+                        }
+                        Divider()
+                        Button("Show All Shortcuts") {
+                            hiddenQuickAccessItemsRaw = ""
+                        }
+                    } label: {
+                        Image(systemName: "slider.horizontal.3")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                            .frame(width: 18, height: 18)
+                            .contentShape(Rectangle())
                     }
-                } label: {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundColor(.secondary)
-                        .frame(width: 18, height: 18)
-                        .contentShape(Rectangle())
+                    .menuStyle(.borderlessButton)
+                    .accessibilityLabel("Choose Quick Access shortcuts")
+                    .help("Show or hide Quick Access shortcuts")
+
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            _ = hiddenQuickAccessPanes.insert(pane)
+                        }
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundColor(.secondary)
+                            .frame(width: 18, height: 18)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Hide Quick Access for \(paneTitle) pane")
                 }
-                .buttonStyle(.plain)
-                .help("Hide Quick Access for \(paneTitle) pane")
                 .padding(.trailing, 6)
                 .padding(.top, 8)
             }
             
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
-                    ForEach(quickLocations) { location in
+                    ForEach(quickLocations.filter { !hiddenQuickAccessNames.contains($0.name) }) { location in
                         Button {
                             navigateToLocation(location.url, in: pane)
                         } label: {

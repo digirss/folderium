@@ -11,7 +11,7 @@ BUILD="$REPO/build"
 APP_NAME="Folderium-X"
 APP="$BUILD/$APP_NAME.app"
 BUNDLE_ID="com.leon.FolderiumX"
-VERSION="0.1.0"
+VERSION="0.1.1"
 
 rm -rf "$BUILD"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -44,7 +44,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleIdentifier</key>
     <string>$BUNDLE_ID</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>2</string>
     <key>CFBundleShortVersionString</key>
     <string>$VERSION</string>
     <key>CFBundleExecutable</key>
