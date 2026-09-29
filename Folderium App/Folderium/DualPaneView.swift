@@ -1791,7 +1791,9 @@ struct DualPaneView: View {
                                 // Reset cut operation after paste
                                 isCutOperation = false
                                 if let error = outcome.error {
-                                    print("Error pasting files: \(error)")
+                                    FileOperationErrorCenter.shared.report(
+                                        title: "貼上失敗",
+                                        message: error.localizedDescription)
                                 }
                             }
                             
@@ -1958,7 +1960,11 @@ struct DualPaneView: View {
                             refreshTrigger = UUID()
                         }
                     } catch {
-                        print("Error compressing files: \(error)")
+                        await MainActor.run {
+                            FileOperationErrorCenter.shared.report(
+                                title: "壓縮失敗",
+                                message: error.localizedDescription)
+                        }
                     }
                 }
             } else {
@@ -1997,7 +2003,11 @@ struct DualPaneView: View {
                         try FileManager.default.removeItem(at: fileURL)
                     }
                 } catch {
-                    print("Error deleting file \(fileURL.lastPathComponent): \(error)")
+                    await MainActor.run {
+                        FileOperationErrorCenter.shared.report(
+                            title: "刪除失敗",
+                            message: "\(fileURL.lastPathComponent): \(error.localizedDescription)")
+                    }
                 }
             }
             await MainActor.run {
@@ -2029,7 +2039,11 @@ struct DualPaneView: View {
                     try FileManager.default.moveItem(at: entry.to, to: entry.from)
                     reversedPairs.append((from: entry.to, to: entry.from))
                 } catch {
-                    print("Undo failed for \(entry.to.lastPathComponent): \(error)")
+                    await MainActor.run {
+                        FileOperationErrorCenter.shared.report(
+                            title: "復原失敗",
+                            message: "\(entry.to.lastPathComponent): \(error.localizedDescription)")
+                    }
                 }
             }
             
@@ -2056,7 +2070,11 @@ struct DualPaneView: View {
                     try FileManager.default.moveItem(at: entry.from, to: entry.to)
                     reappliedPairs.append((from: entry.from, to: entry.to))
                 } catch {
-                    print("Redo failed for \(entry.from.lastPathComponent): \(error)")
+                    await MainActor.run {
+                        FileOperationErrorCenter.shared.report(
+                            title: "重做失敗",
+                            message: "\(entry.from.lastPathComponent): \(error.localizedDescription)")
+                    }
                 }
             }
             
@@ -2189,7 +2207,7 @@ struct DualPaneView: View {
         
         // Name probing + mkdir can stall on slow volumes — keep off the UI thread.
         Task {
-            let created = await Task.detached(priority: .userInitiated) { () -> URL? in
+            let created = await Task.detached(priority: .userInitiated) { () -> (URL?, Error?) in
                 var candidateName = baseName
                 var counter = 1
                 
@@ -2201,13 +2219,17 @@ struct DualPaneView: View {
                 let newFolderURL = targetDirectory.appendingPathComponent(candidateName)
                 do {
                     try FileManager.default.createDirectory(at: newFolderURL, withIntermediateDirectories: false)
-                    return newFolderURL
+                    return (newFolderURL, nil)
                 } catch {
-                    print("Error creating folder in active pane: \(error)")
-                    return nil
+                    return (nil, error)
                 }
             }.value
-            if let newFolderURL = created {
+            if let createdError = created.1 {
+                FileOperationErrorCenter.shared.report(
+                    title: "新增資料夾失敗",
+                    message: createdError.localizedDescription)
+            }
+            if let newFolderURL = created.0 {
                 setSelectionInPane([newFolderURL], for: activePane)
                 refreshTrigger = UUID()
             }
@@ -3871,7 +3893,9 @@ struct FilePaneView: View {
                     onRecordMoveBatch("Move via Drag and Drop", moveOutcome.pairs)
                 }
                 if let error = moveOutcome.error {
-                    print("Error during drop operation: \(error)")
+                    FileOperationErrorCenter.shared.report(
+                        title: "搬移失敗",
+                        message: error.localizedDescription)
                 }
             }
             
@@ -4920,7 +4944,9 @@ struct FileContextMenu: View {
         let configuration = NSWorkspace.OpenConfiguration()
         NSWorkspace.shared.open([file.url], withApplicationAt: applicationURL, configuration: configuration) { _, error in
             if let error {
-                print("Error opening file with selected app: \(error)")
+                FileOperationErrorCenter.shared.report(
+                    title: "開啟失敗",
+                    message: error.localizedDescription)
             }
         }
     }
@@ -4960,7 +4986,11 @@ struct FileContextMenu: View {
                     onFileOperation() // Refresh the file list
                 }
             } catch {
-                print("Error compressing file: \(error)")
+                await MainActor.run {
+                    FileOperationErrorCenter.shared.report(
+                        title: "壓縮失敗",
+                        message: error.localizedDescription)
+                }
             }
         }
     }
@@ -5019,7 +5049,11 @@ struct FileContextMenu: View {
                     showFileInfoDialog(fileInfo: fileInfo)
                 }
             } catch {
-                print("Error getting file info: \(error)")
+                await MainActor.run {
+                    FileOperationErrorCenter.shared.report(
+                        title: "讀取檔案資訊失敗",
+                        message: error.localizedDescription)
+                }
             }
         }
     }
@@ -5146,7 +5180,9 @@ struct FileContextMenu: View {
                 }
             }.value
             if let trashError {
-                print("Error moving to trash: \(trashError)")
+                FileOperationErrorCenter.shared.report(
+                    title: "丟入垃圾桶失敗",
+                    message: trashError.localizedDescription)
             }
             onFileOperation() // Refresh the file list
         }
@@ -5165,7 +5201,9 @@ struct FileContextMenu: View {
                 }
             }.value
             if let deleteError {
-                print("Error deleting file: \(deleteError)")
+                FileOperationErrorCenter.shared.report(
+                    title: "刪除失敗",
+                    message: deleteError.localizedDescription)
             }
             onFileOperation() // Refresh the file list
         }
@@ -5409,7 +5447,7 @@ struct EmptyAreaContextMenu: View {
         
         // Name probing + mkdir can stall on slow volumes — keep off the UI thread.
         Task {
-            let ok = await Task.detached(priority: .userInitiated) { () -> Bool in
+            let result = await Task.detached(priority: .userInitiated) { () -> (Bool, Error?) in
                 var finalName = folderName
                 var counter = 1
                 
@@ -5424,13 +5462,17 @@ struct EmptyAreaContextMenu: View {
                         at: targetPath.appendingPathComponent(finalName),
                         withIntermediateDirectories: true
                     )
-                    return true
+                    return (true, nil)
                 } catch {
-                    print("Error creating folder: \(error)")
-                    return false
+                    return (false, error)
                 }
             }.value
-            if ok {
+            if let error = result.1 {
+                FileOperationErrorCenter.shared.report(
+                    title: "新增資料夾失敗",
+                    message: error.localizedDescription)
+            }
+            if result.0 {
                 onFileOperation()
             }
         }
@@ -5441,7 +5483,7 @@ struct EmptyAreaContextMenu: View {
         
         // Name probing + file creation can stall on slow volumes — off the UI thread.
         Task {
-            let ok = await Task.detached(priority: .userInitiated) { () -> Bool in
+            let result = await Task.detached(priority: .userInitiated) { () -> (Bool, Error?) in
                 var finalName = fileName
                 var counter = 1
                 
@@ -5468,13 +5510,17 @@ struct EmptyAreaContextMenu: View {
                         atomically: true,
                         encoding: .utf8
                     )
-                    return true
+                    return (true, nil)
                 } catch {
-                    print("Error creating file: \(error)")
-                    return false
+                    return (false, error)
                 }
             }.value
-            if ok {
+            if let error = result.1 {
+                FileOperationErrorCenter.shared.report(
+                    title: "新增檔案失敗",
+                    message: error.localizedDescription)
+            }
+            if result.0 {
                 onFileOperation()
             }
         }
@@ -5528,7 +5574,11 @@ struct EmptyAreaContextMenu: View {
                     showDiskUsageAlert(size: size)
                 }
             } catch {
-                print("Error calculating folder size: \(error)")
+                await MainActor.run {
+                    FileOperationErrorCenter.shared.report(
+                        title: "計算資料夾大小失敗",
+                        message: error.localizedDescription)
+                }
             }
         }
     }

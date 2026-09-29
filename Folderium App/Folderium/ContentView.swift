@@ -149,6 +149,10 @@ struct ContentView: View {
         .background(FolderiumTheme.windowBackground(isSoftDark: softDarkThemeEnabled))
         .font(.system(size: globalFontSize))
         .preferredColorScheme(softDarkThemeEnabled ? .dark : .light)
+        // P1: user-visible failure surface for file operations (bounded toasts).
+        .overlay(alignment: .bottom) {
+            FileOperationErrorToastOverlay()
+        }
     }
 }
 
