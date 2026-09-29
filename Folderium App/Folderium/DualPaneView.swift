@@ -116,6 +116,13 @@ struct DualPaneView: View {
     @State private var pinnedPaths: [String] = []
     @State private var mountedVolumes: [QuickLocation] = []
     @State private var volumeRefreshGeneration = 0
+    // Cached clipboard state: pasteboard.readObjects is an XPC round trip and
+    // must never run per-row or per body render (selection clicks froze the UI).
+    // Refreshed via a lightweight changeCount poll plus explicit bumps after
+    // our own copy/cut writes.
+    @State private var clipboardHasFiles: Bool = false
+    @State private var clipboardChangeCount: Int = -1
+    @State private var clipboardPollTask: Task<Void, Never>?
     @State private var draggedPinnedPath: String?
     @State private var undoStack: [FileMoveBatch] = []
     @State private var redoStack: [FileMoveBatch] = []
@@ -349,6 +356,19 @@ struct DualPaneView: View {
         }
     }
 
+    /// One pasteboard probe per actual change. readObjects is an XPC round
+    /// trip — callers must use the cached `clipboardHasFiles` flag instead.
+    @MainActor private static func probeClipboardForFiles() -> Bool {
+        let pasteboard = NSPasteboard.general
+        if let fileURLs = pasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [NSURL] {
+            return !fileURLs.isEmpty
+        }
+        if let filePaths = pasteboard.string(forType: .string), !filePaths.isEmpty {
+            return true
+        }
+        return false
+    }
+
     private struct ToolbarColumnsLayout: Codable {
         var order: [String]
         var hidden: [String]
@@ -473,7 +493,7 @@ struct DualPaneView: View {
                 explorerToolbarButton("Cut", systemImage: "scissors", shortcutHint: toolbarShortcutText(for: .cutSelected)) { cutSelectedFiles() }
                     .disabled(activePaneSelection.isEmpty)
                 explorerToolbarButton("Paste", systemImage: "doc.on.clipboard", shortcutHint: toolbarShortcutText(for: .pasteIntoActivePane)) { pasteFiles() }
-                    .disabled(!hasFilesInClipboard())
+                    .disabled(!clipboardHasFiles)
                     .onChange(of: clipboardCheckTrigger) { _, _ in }
                 explorerToolbarButton("New Folder", systemImage: "folder.badge.plus", shortcutHint: toolbarShortcutText(for: .newFolderInActivePane)) {
                     createNewFolderInActivePane()
@@ -634,8 +654,21 @@ struct DualPaneView: View {
         .task {
             await restoreStartupFolders()
         }
+        .task {
+            // Track clipboard content changes with the cheap local changeCount
+            // (no XPC); only re-read the pasteboard when it actually changed.
+            while !Task.isCancelled {
+                let current = NSPasteboard.general.changeCount
+                if current != clipboardChangeCount {
+                    clipboardChangeCount = current
+                    clipboardHasFiles = Self.probeClipboardForFiles()
+                }
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            }
+        }
         .onDisappear {
             stopShortcutMonitor()
+            clipboardPollTask?.cancel()
         }
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didMountNotification)) { _ in
             refreshMountedVolumes()
@@ -830,7 +863,7 @@ struct DualPaneView: View {
                     onNavigateBack: { navigateBack(in: pane) },
                     onNavigateForward: { navigateForward(in: pane) },
                     onNavigateUp: { navigateUp(in: pane) },
-                    canPasteFromClipboard: { hasFilesInClipboard() },
+                    canPasteFromClipboard: { clipboardHasFiles },
                     onPasteIntoPath: { destination in
                         activePane = pane
                         pasteFiles(destinationOverride: destination ?? pathForPane(pane))
@@ -2319,6 +2352,9 @@ struct FilePaneView: View {
                         tableWidth = geometry.size.width
                     }
                     .onChange(of: geometry.size.width) { _, newWidth in
+                        // Guard against sub-pixel repeats: SwiftUI fires this
+                        // multiple times per frame during layout transitions.
+                        guard abs(newWidth - tableWidth) > 0.5 else { return }
                         tableWidth = newWidth
                     }
             }
@@ -2959,7 +2995,7 @@ struct FilePaneView: View {
                             onRefresh()
                         },
                         onRecordMoveBatch: onRecordMoveBatch,
-                        canPasteFromClipboard: canPasteFromClipboard(),
+                        canPasteFromClipboard: { canPasteFromClipboard() },
                         onPasteIntoFolder: { folderURL in
                             onPasteIntoPath(folderURL)
                         },
@@ -2992,7 +3028,7 @@ struct FilePaneView: View {
         .contextMenu {
             EmptyAreaContextMenu(
                 currentPath: path,
-                canPasteFromClipboard: canPasteFromClipboard(),
+                canPasteFromClipboard: { canPasteFromClipboard() },
                 onPaste: {
                     onPasteIntoPath(nil)
                 },
@@ -4039,7 +4075,9 @@ struct FileRowView: View {
     let onCancelInlineRename: () -> Void
     let onFileOperation: () -> Void
     let onRecordMoveBatch: (_ title: String, _ pairs: [(from: URL, to: URL)]) -> Void
-    let canPasteFromClipboard: Bool
+    /// Evaluated lazily when a context menu actually opens — never during row
+    /// construction (clipboard reads are XPC round trips).
+    let canPasteFromClipboard: () -> Bool
     let onPasteIntoFolder: (URL) -> Void
     let onBulkCompress: () -> Void
     let onDropToFolder: (URL?, [NSItemProvider]) -> Bool
@@ -4107,7 +4145,9 @@ struct FileRowView: View {
                     onSelectWithModifiers(false, false)
                 },
                 onRecordMoveBatch: onRecordMoveBatch,
-                canPasteFromClipboard: canPasteFromClipboard,
+                // FileContextMenu takes a closure too: its paste item must be
+                // evaluated when the menu opens, not when the row is built.
+                canPasteFromClipboard: { canPasteFromClipboard() },
                 onPasteIntoFolder: onPasteIntoFolder,
                 onBulkCompress: onBulkCompress,
                 onBeginInlineRename: { url in
@@ -4663,7 +4703,7 @@ struct FileContextMenu: View {
     let onFileOperation: () -> Void
     let onSelect: () -> Void
     let onRecordMoveBatch: (_ title: String, _ pairs: [(from: URL, to: URL)]) -> Void
-    let canPasteFromClipboard: Bool
+    let canPasteFromClipboard: () -> Bool
     let onPasteIntoFolder: (URL) -> Void
     let onBulkCompress: () -> Void
     var onBeginInlineRename: ((URL) -> Void)? = nil
@@ -4730,7 +4770,7 @@ struct FileContextMenu: View {
                 Button("Paste Into Folder") {
                     onPasteIntoFolder(file.url)
                 }
-                .disabled(!canPasteFromClipboard)
+                .disabled(!canPasteFromClipboard())
             }
             
             Divider()
@@ -5264,7 +5304,7 @@ final class QuickLookCoordinator: NSObject, QLPreviewPanelDataSource, QLPreviewP
 
 struct EmptyAreaContextMenu: View {
     let currentPath: URL
-    let canPasteFromClipboard: Bool
+    let canPasteFromClipboard: () -> Bool
     let onPaste: () -> Void
     let onFileOperation: () -> Void
     
@@ -5281,7 +5321,7 @@ struct EmptyAreaContextMenu: View {
             Button("Paste") {
                 onPaste()
             }
-            .disabled(!canPasteFromClipboard)
+            .disabled(!canPasteFromClipboard())
             
             Divider()
             
