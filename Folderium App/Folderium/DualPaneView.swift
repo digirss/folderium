@@ -304,18 +304,23 @@ struct DualPaneView: View {
         ]
     }
 
-    private var hiddenQuickAccessNames: Set<String> {
-        Set(hiddenQuickAccessItemsRaw.split(separator: ",").map(String.init))
+    private var quickAccessVisibility: QuickAccessVisibility {
+        QuickAccessVisibility(storedValue: hiddenQuickAccessItemsRaw)
     }
 
-    private func setQuickAccessVisible(_ name: String, visible: Bool) {
-        var hidden = hiddenQuickAccessNames
-        if visible {
-            hidden.remove(name)
-        } else {
-            hidden.insert(name)
-        }
-        hiddenQuickAccessItemsRaw = hidden.sorted().joined(separator: ",")
+    private func quickAccessVisible(_ category: QuickAccessVisibility.Category, _ identifier: String) -> Bool {
+        quickAccessVisibility.isVisible(category, identifier)
+    }
+
+    private func visibilityBinding(_ category: QuickAccessVisibility.Category, _ identifier: String) -> Binding<Bool> {
+        Binding(
+            get: { quickAccessVisible(category, identifier) },
+            set: { isVisible in
+                var visibility = quickAccessVisibility
+                visibility.setVisible(category, identifier, visible: isVisible)
+                hiddenQuickAccessItemsRaw = visibility.storedValue
+            }
+        )
     }
     
     nonisolated private static func loadMountedVolumes() -> [QuickLocation] {
@@ -953,6 +958,17 @@ struct DualPaneView: View {
     @ViewBuilder
     private func quickAccessSidebar(for pane: ActivePane) -> some View {
         let paneRecentLocations = recentLocations(for: pane)
+        let panePinnedLocations = pinnedLocations
+        let visibleQuickLocations = quickLocations.filter { quickAccessVisible(.shortcut, $0.name) }
+        let visibleRecentLocations = quickAccessVisible(.section, "Recent")
+            ? paneRecentLocations.filter { quickAccessVisible(.recent, $0.url.path) } : []
+        let visiblePinnedLocations = quickAccessVisible(.section, "Pinned")
+            ? panePinnedLocations.filter { quickAccessVisible(.pinned, $0.url.path) } : []
+        let visibleMountedVolumes = quickAccessVisible(.section, "Drives")
+            ? mountedVolumes.filter { quickAccessVisible(.drive, $0.url.path) } : []
+        let hasActions = quickAccessVisible(.action, "Pin Active Folder") || quickAccessVisible(.action, "Choose Folder")
+        let hasFollowingQuickAccessContent = !visibleRecentLocations.isEmpty || !visiblePinnedLocations.isEmpty
+            || !visibleMountedVolumes.isEmpty || hasActions
         let paneTitle = pane.displayName
         
         VStack(alignment: .leading, spacing: 0) {
@@ -971,15 +987,45 @@ struct DualPaneView: View {
                 HStack(spacing: 2) {
                     Menu {
                         ForEach(quickLocations) { location in
-                            Toggle(location.name, isOn: Binding(
-                                get: { !hiddenQuickAccessNames.contains(location.name) },
-                                set: { isVisible in
-                                    setQuickAccessVisible(location.name, visible: isVisible)
-                                }
-                            ))
+                            Toggle(location.name, isOn: visibilityBinding(.shortcut, location.name))
                         }
                         Divider()
-                        Button("Show All Shortcuts") {
+                        Menu("Recent") {
+                            Toggle("Show Recent", isOn: visibilityBinding(.section, "Recent"))
+                            if !paneRecentLocations.isEmpty {
+                                Divider()
+                                ForEach(paneRecentLocations, id: \.url.path) { location in
+                                    Toggle(location.name, isOn: visibilityBinding(.recent, location.url.path))
+                                        .help(location.url.path)
+                                }
+                            }
+                        }
+                        Menu("Pinned") {
+                            Toggle("Show Pinned", isOn: visibilityBinding(.section, "Pinned"))
+                            if !panePinnedLocations.isEmpty {
+                                Divider()
+                                ForEach(panePinnedLocations, id: \.url.path) { location in
+                                    Toggle(location.name, isOn: visibilityBinding(.pinned, location.url.path))
+                                        .help(location.url.path)
+                                }
+                            }
+                        }
+                        Menu("Drives") {
+                            Toggle("Show Drives", isOn: visibilityBinding(.section, "Drives"))
+                            if !mountedVolumes.isEmpty {
+                                Divider()
+                                ForEach(mountedVolumes, id: \.url.path) { location in
+                                    Toggle(location.name, isOn: visibilityBinding(.drive, location.url.path))
+                                        .help(location.url.path)
+                                }
+                            }
+                        }
+                        Menu("Actions") {
+                            Toggle("Pin Active Folder", isOn: visibilityBinding(.action, "Pin Active Folder"))
+                            Toggle("Choose Folder...", isOn: visibilityBinding(.action, "Choose Folder"))
+                        }
+                        Divider()
+                        Button("Show All Items") {
                             hiddenQuickAccessItemsRaw = ""
                         }
                     } label: {
@@ -991,8 +1037,8 @@ struct DualPaneView: View {
                     }
                     .menuStyle(.borderlessButton)
                     .menuIndicator(.hidden)
-                    .accessibilityLabel("Choose Quick Access shortcuts")
-                    .help("Show or hide Quick Access shortcuts")
+                    .accessibilityLabel("Choose Quick Access items")
+                    .help("Show or hide Quick Access items")
 
                     Button {
                         withAnimation(.easeInOut(duration: 0.15)) {
@@ -1014,7 +1060,7 @@ struct DualPaneView: View {
             
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
-                    ForEach(quickLocations.filter { !hiddenQuickAccessNames.contains($0.name) }) { location in
+                    ForEach(visibleQuickLocations) { location in
                         Button {
                             navigateToLocation(location.url, in: pane)
                         } label: {
@@ -1032,16 +1078,18 @@ struct DualPaneView: View {
                         .buttonStyle(.plain)
                     }
                     
-                    Divider().padding(.vertical, 6)
+                    if !visibleQuickLocations.isEmpty && hasFollowingQuickAccessContent {
+                        Divider().padding(.vertical, 6)
+                    }
                     
-                    if !paneRecentLocations.isEmpty {
+                    if !visibleRecentLocations.isEmpty {
                         Text("Recent")
                             .font(.caption)
                             .foregroundColor(.secondary)
                             .padding(.horizontal, 10)
                             .padding(.bottom, 4)
                         
-                        ForEach(paneRecentLocations) { location in
+                        ForEach(visibleRecentLocations) { location in
                             Button {
                                 navigateToLocation(location.url, in: pane)
                             } label: {
@@ -1059,17 +1107,19 @@ struct DualPaneView: View {
                             .buttonStyle(.plain)
                         }
                         
-                        Divider().padding(.vertical, 6)
+                        if !visiblePinnedLocations.isEmpty || !visibleMountedVolumes.isEmpty || hasActions {
+                            Divider().padding(.vertical, 6)
+                        }
                     }
                     
-                    if !pinnedLocations.isEmpty {
+                    if !visiblePinnedLocations.isEmpty {
                         Text("Pinned")
                             .font(.caption)
                             .foregroundColor(.secondary)
                             .padding(.horizontal, 10)
                             .padding(.bottom, 4)
                         
-                        ForEach(pinnedLocations, id: \.url.path) { location in
+                        ForEach(visiblePinnedLocations, id: \.url.path) { location in
                             Button {
                                 navigateToLocation(location.url, in: pane)
                             } label: {
@@ -1101,17 +1151,19 @@ struct DualPaneView: View {
                             ))
                         }
                         
-                        Divider().padding(.vertical, 6)
+                        if !visibleMountedVolumes.isEmpty || hasActions {
+                            Divider().padding(.vertical, 6)
+                        }
                     }
                     
-                    if !mountedVolumes.isEmpty {
+                    if !visibleMountedVolumes.isEmpty {
                         Text("Drives")
                             .font(.caption)
                             .foregroundColor(.secondary)
                             .padding(.horizontal, 10)
                             .padding(.bottom, 4)
                         
-                        ForEach(mountedVolumes) { location in
+                        ForEach(visibleMountedVolumes) { location in
                             HStack(spacing: 8) {
                                 Button {
                                     navigateToLocation(location.url, in: pane)
@@ -1140,38 +1192,44 @@ struct DualPaneView: View {
                             .padding(.vertical, 6)
                         }
                         
-                        Divider().padding(.vertical, 6)
+                        if hasActions {
+                            Divider().padding(.vertical, 6)
+                        }
                     }
                     
-                    Button {
-                        pinActiveFolder(in: pane)
-                    } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: "pin")
-                                .foregroundColor(.accentColor)
-                            Text("Pin Active Folder")
-                            Spacer()
+                    if quickAccessVisible(.action, "Pin Active Folder") {
+                        Button {
+                            pinActiveFolder(in: pane)
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "pin")
+                                    .foregroundColor(.accentColor)
+                                Text("Pin Active Folder")
+                                Spacer()
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .contentShape(Rectangle())
                         }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .contentShape(Rectangle())
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                     
-                    Button {
-                        selectFolder(for: pane)
-                    } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: "folder.badge.plus")
-                                .foregroundColor(.accentColor)
-                            Text("Choose Folder...")
-                            Spacer()
+                    if quickAccessVisible(.action, "Choose Folder") {
+                        Button {
+                            selectFolder(for: pane)
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "folder.badge.plus")
+                                    .foregroundColor(.accentColor)
+                                Text("Choose Folder...")
+                                Spacer()
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .contentShape(Rectangle())
                         }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .contentShape(Rectangle())
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
                 .padding(.horizontal, 6)
                 .padding(.bottom, 8)
