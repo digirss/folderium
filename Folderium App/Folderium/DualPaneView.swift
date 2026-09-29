@@ -30,7 +30,7 @@ enum PaneLayout: String, CaseIterable {
     }
 }
 
-struct QuickLocation: Identifiable {
+struct QuickLocation: Identifiable, Sendable {
     let id = UUID()
     let name: String
     let icon: String
@@ -113,6 +113,8 @@ struct DualPaneView: View {
     @State private var hostingWindow: NSWindow?
     @State private var activeShortcutBindings: [ShortcutBinding] = ShortcutStore.defaultBindings
     @State private var pinnedPaths: [String] = []
+    @State private var mountedVolumes: [QuickLocation] = []
+    @State private var volumeRefreshGeneration = 0
     @State private var draggedPinnedPath: String?
     @State private var undoStack: [FileMoveBatch] = []
     @State private var redoStack: [FileMoveBatch] = []
@@ -301,7 +303,7 @@ struct DualPaneView: View {
         ]
     }
     
-    private var mountedVolumes: [QuickLocation] {
+    nonisolated private static func loadMountedVolumes() -> [QuickLocation] {
         let volumeURLs = FileManager.default.mountedVolumeURLs(
             includingResourceValuesForKeys: [.volumeNameKey],
             options: [.skipHiddenVolumes]
@@ -310,6 +312,19 @@ struct DualPaneView: View {
         return volumeURLs.map { url in
             let name = (try? url.resourceValues(forKeys: [.volumeNameKey]).volumeName) ?? url.lastPathComponent
             return QuickLocation(name: name, icon: "externaldrive", url: url)
+        }
+    }
+
+    @MainActor private func refreshMountedVolumes() {
+        volumeRefreshGeneration += 1
+        let generation = volumeRefreshGeneration
+        Task { @MainActor in
+            // A disconnected drive can stall volume enumeration. Never await it during view layout.
+            let volumes = await Task.detached(priority: .utility) {
+                Self.loadMountedVolumes()
+            }.value
+            guard generation == volumeRefreshGeneration else { return }
+            mountedVolumes = volumes
         }
     }
 
@@ -576,6 +591,7 @@ struct DualPaneView: View {
             }
         }
         .onAppear {
+            refreshMountedVolumes()
             var didRestoreAnyBookmark = false
             if let restoredLeftPath = SandboxAccessManager.restoreBookmark(for: .left) {
                 leftPath = resolveRestoredPath(savedPathRaw: leftCurrentPathRaw, fallbackRoot: restoredLeftPath)
@@ -606,6 +622,12 @@ struct DualPaneView: View {
         }
         .onDisappear {
             stopShortcutMonitor()
+        }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didMountNotification)) { _ in
+            refreshMountedVolumes()
+        }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didUnmountNotification)) { _ in
+            refreshMountedVolumes()
         }
         .onChange(of: shortcutsRaw) { _, _ in
             activeShortcutBindings = ShortcutStore.load(from: shortcutsRaw)
@@ -1353,6 +1375,7 @@ struct DualPaneView: View {
                 try await FileManager.default.unmountVolume(at: url, options: [])
                 await MainActor.run {
                     refreshTrigger = UUID()
+                    refreshMountedVolumes()
                 }
             } catch {
                 await MainActor.run {
