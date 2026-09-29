@@ -24,6 +24,10 @@ swiftc -O \
   "$SRC/ContentView.swift" \
   "$SRC/DualPaneView.swift" \
   "$SRC/ToolbarCustomization.swift" \
+  "$SRC/FileModel.swift" \
+  "$SRC/ContextMenus.swift" \
+  "$SRC/FileRows.swift" \
+  "$SRC/PaneSupport.swift" \
   "$SRC/Managers/"*.swift \
   -o "$APP/Contents/MacOS/$APP_NAME"
 

@@ -7,12 +7,13 @@ from pathlib import Path
 import re
 import unittest
 
-SOURCE = (Path(__file__).resolve().parents[1] / "Folderium App" / "Folderium" / "DualPaneView.swift")
+_SRC_DIR = Path(__file__).resolve().parents[1] / "Folderium App" / "Folderium"
+SOURCE = "\n".join(p.read_text() for p in sorted(_SRC_DIR.rglob("*.swift")))
 
 
 class RowKeyboardFocusTests(unittest.TestCase):
     def test_click_on_row_claims_focus_before_selection(self):
-        source = SOURCE.read_text()
+        source = SOURCE
         row_view = source.split("final class MouseCaptureNSView: NSView {", 1)[1].split(
             "// MARK: - Sandbox Access", 1
         )[0]
@@ -25,7 +26,7 @@ class RowKeyboardFocusTests(unittest.TestCase):
                         body.index("onMouseDown?(event)"))
 
     def test_text_editor_still_receives_unmodified_keys(self):
-        source = SOURCE.read_text()
+        source = SOURCE
         monitor = source.split("private func startShortcutMonitor()", 1)[1].split(
             "private func stopShortcutMonitor()", 1
         )[0]

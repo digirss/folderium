@@ -7,8 +7,9 @@ import re
 import unittest
 from pathlib import Path
 
-APP = Path(__file__).resolve().parents[1] / "Folderium App" / "Folderium" / "DualPaneView.swift"
-SOURCE = APP.read_text()
+_SRC_DIR = Path(__file__).resolve().parents[1] / "Folderium App" / "Folderium"
+APP = _SRC_DIR / "DualPaneView.swift"  # primary; SOURCE = all files combined
+SOURCE = "\n".join(p.read_text() for p in sorted(_SRC_DIR.rglob("*.swift")))
 
 
 def method_body(name: str, keyword: str = "func") -> str:
