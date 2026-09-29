@@ -4096,11 +4096,14 @@ private struct RowMouseCaptureView: NSViewRepresentable {
             true
         }
 
+        override var acceptsFirstResponder: Bool { true }
+
         override func hitTest(_ point: NSPoint) -> NSView? {
             self
         }
 
         override func mouseDown(with event: NSEvent) {
+            window?.makeFirstResponder(self)
             onMouseDown?(event)
         }
 
