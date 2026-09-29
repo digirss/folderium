@@ -23,6 +23,7 @@ swiftc -O \
   "$SRC/FolderiumApp.swift" \
   "$SRC/ContentView.swift" \
   "$SRC/DualPaneView.swift" \
+  "$SRC/ToolbarCustomization.swift" \
   "$SRC/Managers/"*.swift \
   -o "$APP/Contents/MacOS/$APP_NAME"
 

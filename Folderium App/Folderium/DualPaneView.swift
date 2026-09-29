@@ -473,52 +473,83 @@ struct DualPaneView: View {
         }
     }
     
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                explorerToolbarButton("Open Left", systemImage: "folder.badge.plus") { selectFolder(for: .left) }
-                explorerToolbarButton("Open Right", systemImage: "folder.badge.plus") { selectFolder(for: .right) }
-                if paneLayout == .quad {
-                    explorerToolbarButton("Open BL", systemImage: "folder.badge.plus") { selectFolder(for: .bottomLeft) }
-                    explorerToolbarButton("Open BR", systemImage: "folder.badge.plus") { selectFolder(for: .bottomRight) }
+    // File toolbar customization (Firefox-style): visibility + order + collapse.
+    static let fileToolbarStorageKey = "folderium.toolbar.fileRowLayout"
+    static let fileToolbarCollapsedKey = "folderium.toolbar.fileRowCollapsed"
+    private static let fileToolbarDefaultIDs = [
+        "openFolders", "layout", "clipboard", "fileOps", "history",
+        "hiddenFiles", "columns"
+    ]
+    @State private var fileToolbarLayout: CustomizableToolbarLayout =
+        .defaults(for: DualPaneView.fileToolbarDefaultIDs)
+    @AppStorage(DualPaneView.fileToolbarCollapsedKey) private var fileToolbarCollapsed: Bool = false
+
+    private var fileToolbarItems: [CustomizableToolbarItem] {
+        [
+            .init(id: "openFolders", title: "開啟資料夾 (Open L/R)", systemImage: "folder.badge.plus"),
+            .init(id: "layout", title: "版面 1/2/2×2", systemImage: "rectangle.split.2x2"),
+            .init(id: "clipboard", title: "複製/剪下/貼上/新資料夾", systemImage: "doc.on.doc"),
+            .init(id: "fileOps", title: "重新命名/丟垃圾桶/壓縮", systemImage: "pencil"),
+            .init(id: "history", title: "復原/重做", systemImage: "arrow.uturn.backward"),
+            .init(id: "hiddenFiles", title: "顯示隱藏檔", systemImage: "eye"),
+            .init(id: "columns", title: "欄位顯示 (Columns)", systemImage: "line.3.horizontal.decrease.circle")
+        ]
+    }
+
+    @ViewBuilder
+    private var fileToolbarRow: some View {
+        CustomizableToolbarRow(
+            storageKey: DualPaneView.fileToolbarStorageKey,
+            items: fileToolbarItems,
+            layout: $fileToolbarLayout,
+            isCollapsed: $fileToolbarCollapsed
+        ) { itemID in
+            switch itemID {
+            case "openFolders":
+                HStack(spacing: 8) {
+                    explorerToolbarButton("Open Left", systemImage: "folder.badge.plus") { selectFolder(for: .left) }
+                    explorerToolbarButton("Open Right", systemImage: "folder.badge.plus") { selectFolder(for: .right) }
+                    if paneLayout == .quad {
+                        explorerToolbarButton("Open BL", systemImage: "folder.badge.plus") { selectFolder(for: .bottomLeft) }
+                        explorerToolbarButton("Open BR", systemImage: "folder.badge.plus") { selectFolder(for: .bottomRight) }
+                    }
                 }
-                
-                Divider().frame(height: 18)
-                
+            case "layout":
                 paneLayoutPicker
-                Divider().frame(height: 18)
-
-                explorerToolbarButton("Copy", systemImage: "doc.on.doc", shortcutHint: toolbarShortcutText(for: .copySelected)) { copySelectedFiles() }
-                    .disabled(activePaneSelection.isEmpty)
-                explorerToolbarButton("Cut", systemImage: "scissors", shortcutHint: toolbarShortcutText(for: .cutSelected)) { cutSelectedFiles() }
-                    .disabled(activePaneSelection.isEmpty)
-                explorerToolbarButton("Paste", systemImage: "doc.on.clipboard", shortcutHint: toolbarShortcutText(for: .pasteIntoActivePane)) { pasteFiles() }
-                    .disabled(!clipboardHasFiles)
-                    .onChange(of: clipboardCheckTrigger) { _, _ in }
-                explorerToolbarButton("New Folder", systemImage: "folder.badge.plus", shortcutHint: toolbarShortcutText(for: .newFolderInActivePane)) {
-                    createNewFolderInActivePane()
+            case "clipboard":
+                HStack(spacing: 8) {
+                    explorerToolbarButton("Copy", systemImage: "doc.on.doc", shortcutHint: toolbarShortcutText(for: .copySelected)) { copySelectedFiles() }
+                        .disabled(activePaneSelection.isEmpty)
+                    explorerToolbarButton("Cut", systemImage: "scissors", shortcutHint: toolbarShortcutText(for: .cutSelected)) { cutSelectedFiles() }
+                        .disabled(activePaneSelection.isEmpty)
+                    explorerToolbarButton("Paste", systemImage: "doc.on.clipboard", shortcutHint: toolbarShortcutText(for: .pasteIntoActivePane)) { pasteFiles() }
+                        .disabled(!clipboardHasFiles)
+                    explorerToolbarButton("New Folder", systemImage: "folder.badge.plus", shortcutHint: toolbarShortcutText(for: .newFolderInActivePane)) {
+                        createNewFolderInActivePane()
+                    }
+                    .disabled(!canCreateFolderInActivePane)
                 }
-                .disabled(!canCreateFolderInActivePane)
-                
-                Divider().frame(height: 18)
-                
-                explorerToolbarButton("Rename", systemImage: "pencil", shortcutHint: toolbarShortcutText(for: .renameSelected)) { renameSelectedItem() }
-                    .disabled(activePaneSelection.count != 1)
-                explorerToolbarButton("Trash", systemImage: "trash", shortcutHint: toolbarShortcutText(for: .deleteSelected)) { trashSelectedFiles() }
-                    .disabled(activePaneSelection.isEmpty)
-                explorerToolbarButton("Compress", systemImage: "archivebox") { compressSelectedFiles() }
-                    .disabled(activePaneSelection.isEmpty)
-                explorerToolbarButton("Undo", systemImage: "arrow.uturn.backward", shortcutHint: toolbarShortcutText(for: .undoLastOperation)) { undoLastOperation() }
-                    .disabled(undoStack.isEmpty)
-                explorerToolbarButton("Redo", systemImage: "arrow.uturn.forward", shortcutHint: toolbarShortcutText(for: .redoLastOperation)) { redoLastOperation() }
-                    .disabled(redoStack.isEmpty)
-
-                Divider().frame(height: 18)
-
+            case "fileOps":
+                HStack(spacing: 8) {
+                    explorerToolbarButton("Rename", systemImage: "pencil", shortcutHint: toolbarShortcutText(for: .renameSelected)) { renameSelectedItem() }
+                        .disabled(activePaneSelection.count != 1)
+                    explorerToolbarButton("Trash", systemImage: "trash", shortcutHint: toolbarShortcutText(for: .deleteSelected)) { trashSelectedFiles() }
+                        .disabled(activePaneSelection.isEmpty)
+                    explorerToolbarButton("Compress", systemImage: "archivebox") { compressSelectedFiles() }
+                        .disabled(activePaneSelection.isEmpty)
+                }
+            case "history":
+                HStack(spacing: 8) {
+                    explorerToolbarButton("Undo", systemImage: "arrow.uturn.backward", shortcutHint: toolbarShortcutText(for: .undoLastOperation)) { undoLastOperation() }
+                        .disabled(undoStack.isEmpty)
+                    explorerToolbarButton("Redo", systemImage: "arrow.uturn.forward", shortcutHint: toolbarShortcutText(for: .redoLastOperation)) { redoLastOperation() }
+                        .disabled(redoStack.isEmpty)
+                }
+            case "hiddenFiles":
                 explorerToolbarButton(showHiddenFiles ? "Hide Hidden" : "Show Hidden", systemImage: showHiddenFiles ? "eye.slash" : "eye") {
                     showHiddenFiles.toggle()
                 }
-
+            case "columns":
                 Menu {
                     Section("Show / Hide Columns") {
                         ForEach(FilePaneView.FileColumn.allCases, id: \.self) { column in
@@ -542,14 +573,23 @@ struct DualPaneView: View {
                     Label("Columns", systemImage: "line.3.horizontal.decrease.circle")
                 }
                 .menuStyle(.borderlessButton)
-                
-                Spacer()
+            default:
+                EmptyView()
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(FolderiumTheme.controlBackground(isSoftDark: softDarkThemeEnabled))
-            
+        }
+        .onAppear {
+            fileToolbarLayout = ToolbarCustomizationStore.load(
+                key: DualPaneView.fileToolbarStorageKey,
+                defaultIDs: DualPaneView.fileToolbarDefaultIDs)
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            fileToolbarRow
+
             Divider()
+
             
             GeometryReader { geometry in
                 let totalWidth = max(geometry.size.width, 500)

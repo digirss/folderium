@@ -13,39 +13,59 @@ struct ContentView: View {
     @State private var previewWidthRatio: CGFloat = 0.34
     @State private var previewDragStartWidth: CGFloat?
     @State private var previewUpdateTask: Task<Void, Never>?
-    
+
+    // Top app-row customization (Firefox-style): visibility + order + collapse.
+    static let appRowStorageKey = "folderium.toolbar.appRowLayout"
+    static let appRowCollapsedKey = "folderium.toolbar.appRowCollapsed"
+    private let appRowItems: [CustomizableToolbarItem] = [
+        .init(id: "navPane", title: "顯示/隱藏導覽側欄", systemImage: "sidebar.leading"),
+        .init(id: "preview", title: "顯示/隱藏預覽窗", systemImage: "rectangle.righthalf.inset.filled"),
+        .init(id: "conflictStrategy", title: "傳輸衝突策略", systemImage: "arrow.triangle.branch")
+    ]
+    @State private var appRowLayout: CustomizableToolbarLayout = .defaults(for: ["navPane", "preview", "conflictStrategy"])
+    @AppStorage(ContentView.appRowCollapsedKey) private var appRowCollapsed: Bool = false
+
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Button(isNavigationPaneVisible ? "Hide Navigation" : "Show Navigation") {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        isNavigationPaneVisible.toggle()
-                    }
-                }
-                .buttonStyle(.bordered)
-                
-                Button(isPreviewVisible ? "Hide Preview" : "Show Preview") {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        if isPreviewVisible {
-                            isPreviewVisible = false
-                        } else {
-                            previewWidthRatio = max(previewWidthRatio, defaultPreviewWidthRatio)
-                            isPreviewVisible = true
+            CustomizableToolbarRow(
+                storageKey: ContentView.appRowStorageKey,
+                items: appRowItems,
+                layout: $appRowLayout,
+                isCollapsed: $appRowCollapsed
+            ) { itemID in
+                switch itemID {
+                case "navPane":
+                    Button(isNavigationPaneVisible ? "Hide Navigation" : "Show Navigation") {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            isNavigationPaneVisible.toggle()
                         }
                     }
-                }
-                .buttonStyle(.bordered)
-
-                ConflictStrategyPicker()
                     .buttonStyle(.bordered)
-
-                Spacer()
+                case "preview":
+                    Button(isPreviewVisible ? "Hide Preview" : "Show Preview") {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            if isPreviewVisible {
+                                isPreviewVisible = false
+                            } else {
+                                previewWidthRatio = max(previewWidthRatio, defaultPreviewWidthRatio)
+                                isPreviewVisible = true
+                            }
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                case "conflictStrategy":
+                    ConflictStrategyPicker()
+                        .buttonStyle(.bordered)
+                default:
+                    EmptyView()
+                }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(FolderiumTheme.controlBackground(isSoftDark: softDarkThemeEnabled))
-            
+            .onAppear {
+                appRowLayout = ToolbarCustomizationStore.load(
+                    key: ContentView.appRowStorageKey,
+                    defaultIDs: appRowItems.map(\.id))
+            }
+
             Divider()
             
             GeometryReader { geometry in
