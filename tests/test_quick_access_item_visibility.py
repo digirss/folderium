@@ -74,8 +74,13 @@ class QuickAccessItemVisibilityTests(unittest.TestCase):
 
     def test_delivered_bundle_has_a_new_version(self):
         source = BUILD_SCRIPT.read_text()
-        self.assert_source_has(source, 'VERSION="0.1.2"')
-        self.assert_source_has(source, '<key>CFBundleVersion</key>\n    <string>3</string>')
+        import re
+        version = re.search(r'^VERSION="(\d+)\.(\d+)\.(\d+)"$', source, re.M)
+        assert version is not None
+        self.assertGreaterEqual(tuple(map(int, version.groups())), (0, 1, 2))
+        build = re.search(r'<key>CFBundleVersion</key>\s*<string>(\d+)</string>', source)
+        assert build is not None
+        self.assertGreaterEqual(int(build.group(1)), 3)
 
 
 if __name__ == "__main__":

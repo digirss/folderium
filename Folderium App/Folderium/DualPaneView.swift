@@ -157,8 +157,9 @@ struct DualPaneView: View {
         case .bottomRight: return bottomRightPath
         }
     }
+    @State private var writableFolderPath: String?
     private var canCreateFolderInActivePane: Bool {
-        FileManager.default.isWritableFile(atPath: activePanePath.path)
+        writableFolderPath == activePanePath.path
     }
     
     // MARK: - Per-pane state accessors (quad layout)
@@ -443,7 +444,7 @@ struct DualPaneView: View {
     private var pinnedLocations: [QuickLocation] {
         pinnedPaths.compactMap { path in
             guard !path.isEmpty else { return nil }
-            let url = URL(fileURLWithPath: path)
+            let url = URL(fileURLWithPath: path, isDirectory: true)
             return QuickLocation(
                 name: url.lastPathComponent.isEmpty ? path : url.lastPathComponent,
                 icon: "pin",
@@ -590,6 +591,15 @@ struct DualPaneView: View {
         }
         .background(FolderiumTheme.windowBackground(isSoftDark: softDarkThemeEnabled))
         .background(WindowAccessor(window: $hostingWindow).frame(width: 0, height: 0))
+        .task(id: activePanePath) {
+            let folder = activePanePath
+            writableFolderPath = nil
+            let writable = await Task.detached(priority: .utility) {
+                FileManager.default.isWritableFile(atPath: folder.path)
+            }.value
+            guard !Task.isCancelled, activePanePath == folder else { return }
+            writableFolderPath = writable ? folder.path : nil
+        }
         .alert(deleteIntent == .trash ? "Move to Trash" : "Delete Files", isPresented: $showDeleteConfirmation) {
             Button("Cancel", role: .cancel) { }
             Button(deleteIntent == .trash ? "Move to Trash" : "Delete", role: .destructive) {
@@ -612,25 +622,6 @@ struct DualPaneView: View {
         }
         .onAppear {
             refreshMountedVolumes()
-            var didRestoreAnyBookmark = false
-            if let restoredLeftPath = SandboxAccessManager.restoreBookmark(for: .left) {
-                leftPath = resolveRestoredPath(savedPathRaw: leftCurrentPathRaw, fallbackRoot: restoredLeftPath)
-                didRestoreAnyBookmark = true
-            }
-            if let restoredRightPath = SandboxAccessManager.restoreBookmark(for: .right) {
-                rightPath = resolveRestoredPath(savedPathRaw: rightCurrentPathRaw, fallbackRoot: restoredRightPath)
-                didRestoreAnyBookmark = true
-            }
-            // Quad bottom panes start under the restored top-row roots (no separate bookmarks).
-            if let restoredLeftPath = SandboxAccessManager.restoreBookmark(for: .left) {
-                bottomLeftPath = resolveRestoredPath(savedPathRaw: bottomLeftCurrentPathRaw, fallbackRoot: restoredLeftPath)
-            }
-            if let restoredRightPath = SandboxAccessManager.restoreBookmark(for: .right) {
-                bottomRightPath = resolveRestoredPath(savedPathRaw: bottomRightCurrentPathRaw, fallbackRoot: restoredRightPath)
-            }
-            if !didRestoreAnyBookmark {
-                promptForInitialDownloadsAccess()
-            }
             if let savedLayout = PaneLayout(rawValue: paneLayoutRaw) {
                 paneLayout = savedLayout
             }
@@ -639,6 +630,9 @@ struct DualPaneView: View {
             persistPinnedPaths()
             activeShortcutBindings = ShortcutStore.load(from: shortcutsRaw)
             startShortcutMonitor()
+        }
+        .task {
+            await restoreStartupFolders()
         }
         .onDisappear {
             stopShortcutMonitor()
@@ -1333,9 +1327,38 @@ struct DualPaneView: View {
         }
     }
 
-    private func resolveRestoredPath(savedPathRaw: String, fallbackRoot: URL) -> URL {
+    private func restoreStartupFolders() async {
+        let originalLeft = leftPath
+        let originalRight = rightPath
+        let originalBottomLeft = bottomLeftPath
+        let originalBottomRight = bottomRightPath
+        let saved = (leftCurrentPathRaw, rightCurrentPathRaw, bottomLeftCurrentPathRaw, bottomRightCurrentPathRaw)
+        // Bookmark resolution and even URL directory inference can block on SMB.
+        let restored = await Task.detached(priority: .userInitiated) {
+            let leftRoot = SandboxAccessManager.restoreBookmark(for: .left)
+            let rightRoot = SandboxAccessManager.restoreBookmark(for: .right)
+            return (
+                leftRoot.map { Self.resolveRestoredPath(savedPathRaw: saved.0, fallbackRoot: $0) },
+                rightRoot.map { Self.resolveRestoredPath(savedPathRaw: saved.1, fallbackRoot: $0) },
+                leftRoot.map { Self.resolveRestoredPath(savedPathRaw: saved.2, fallbackRoot: $0) },
+                rightRoot.map { Self.resolveRestoredPath(savedPathRaw: saved.3, fallbackRoot: $0) }
+            )
+        }.value
+        guard !Task.isCancelled else { return }
+        // Do not undo navigation performed while a remote bookmark was pending.
+        if leftPath == originalLeft, let url = restored.0 { leftPath = url }
+        if rightPath == originalRight, let url = restored.1 { rightPath = url }
+        if bottomLeftPath == originalBottomLeft, let url = restored.2 { bottomLeftPath = url }
+        if bottomRightPath == originalBottomRight, let url = restored.3 { bottomRightPath = url }
+        if restored.0 == nil && restored.1 == nil,
+           leftPath == originalLeft && rightPath == originalRight {
+            promptForInitialDownloadsAccess()
+        }
+    }
+
+    nonisolated private static func resolveRestoredPath(savedPathRaw: String, fallbackRoot: URL) -> URL {
         guard !savedPathRaw.isEmpty else { return fallbackRoot }
-        let candidate = URL(fileURLWithPath: savedPathRaw)
+        let candidate = URL(fileURLWithPath: savedPathRaw, isDirectory: true)
         guard candidate.path == fallbackRoot.path || candidate.path.hasPrefix(fallbackRoot.path + "/") else {
             return fallbackRoot
         }
@@ -1458,12 +1481,8 @@ struct DualPaneView: View {
         for path in paths {
             let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty, !seen.contains(trimmed) else { continue }
-            var isDirectory: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: trimmed, isDirectory: &isDirectory),
-                  isDirectory.boolValue,
-                  FileManager.default.isReadableFile(atPath: trimmed) else {
-                continue
-            }
+            // Offline/unmounted folders are still valid pins. Never probe storage
+            // from SwiftUI state/render paths or silently erase unavailable pins.
             seen.insert(trimmed)
             result.append(trimmed)
         }
@@ -2113,6 +2132,9 @@ struct FilePaneView: View {
     @FocusState private var isPathFieldFocused: Bool
     @State private var pathInput: String = ""
     @State private var searchDebounceTask: Task<Void, Never>?
+    @State private var directoryLoadID = UUID()
+    @State private var directoryLoadTask: Task<Void, Never>?
+    @State private var directoryLoadTimeoutTask: Task<Void, Never>?
     @State private var directoryWatcher: DirectoryWatcher?
     @State private var watcherDebounceTask: Task<Void, Never>?
     @State private var inlineRenamingURL: URL?
@@ -2324,6 +2346,9 @@ struct FilePaneView: View {
         }
         .onDisappear {
             stopDirectoryWatcher()
+            directoryLoadID = UUID()
+            directoryLoadTask?.cancel()
+            directoryLoadTimeoutTask?.cancel()
             searchDebounceTask?.cancel()
             watcherDebounceTask?.cancel()
             advancedSearchTask?.cancel()
@@ -2958,7 +2983,7 @@ struct FilePaneView: View {
             // Build path up to the selected index from root
             var newPath = URL(fileURLWithPath: "/")
             for i in 1...index {
-                newPath = newPath.appendingPathComponent(pathComponents[i])
+                newPath = newPath.appendingPathComponent(pathComponents[i], isDirectory: true)
             }
             path = newPath
         }
@@ -3206,8 +3231,14 @@ struct FilePaneView: View {
     }
     
     private func loadFiles() {
+        directoryLoadTask?.cancel()
+        directoryLoadTimeoutTask?.cancel()
+        let requestID = UUID()
+        directoryLoadID = requestID
         isLoading = true
         errorMessage = nil
+        files = []
+        applyFiltersAndSorting()
         
         print("Loading files from: \(path)")
         
@@ -3217,7 +3248,18 @@ struct FilePaneView: View {
         // immutable copies instead of touching actor state mid-flight.
         let loadPath = path
         let loadShowHidden = showHiddenFiles
-        Task.detached(priority: .userInitiated) {
+        directoryLoadTimeoutTask = Task { @MainActor in
+            do { try await Task.sleep(nanoseconds: 15_000_000_000) }
+            catch { return }
+            guard self.directoryLoadID == requestID, self.path == loadPath else { return }
+            // Cancellation cannot interrupt a blocked kernel filesystem call.
+            // Expire its result without making the UI wait for it to return.
+            self.directoryLoadID = UUID()
+            self.directoryLoadTask?.cancel()
+            self.isLoading = false
+            self.errorMessage = "Folder did not respond within 15 seconds. You can navigate elsewhere or refresh to retry."
+        }
+        directoryLoadTask = Task.detached(priority: .userInitiated) {
             do {
                 let fileManager = FileManager.default
 
@@ -3242,8 +3284,9 @@ struct FilePaneView: View {
                     options: loadShowHidden ? [] : [.skipsHiddenFiles]
                 )
                 
-                let fileItems = contents.map { url in
-                    FileItem(url: url)
+                let fileItems = try contents.map { url in
+                    try Task.checkCancellation()
+                    return FileItem(url: url)
                 }.sorted { first, second in
                     if first.isDirectory && !second.isDirectory {
                         return true
@@ -3255,6 +3298,8 @@ struct FilePaneView: View {
                 }
                 
                 await MainActor.run {
+                    guard self.directoryLoadID == requestID, self.path == loadPath else { return }
+                    self.directoryLoadTimeoutTask?.cancel()
                     self.files = fileItems
                     self.applyFiltersAndSorting()
                     self.isLoading = false
@@ -3264,10 +3309,12 @@ struct FilePaneView: View {
                     }
                 }
             } catch {
-                print("Error loading files from \(path): \(error)")
+                print("Error loading files from \(loadPath): \(error)")
                 print("Error details: \(error.localizedDescription)")
                 
                 await MainActor.run {
+                    guard self.directoryLoadID == requestID, self.path == loadPath else { return }
+                    self.directoryLoadTimeoutTask?.cancel()
                     self.errorMessage = "Cannot access folder: \(error.localizedDescription)"
                     self.isLoading = false
                 }
@@ -3516,19 +3563,19 @@ struct FilePaneView: View {
         let resolvedURL: URL
         
         if expandedPath.hasPrefix("/") {
-            resolvedURL = URL(fileURLWithPath: expandedPath)
+            resolvedURL = URL(fileURLWithPath: expandedPath, isDirectory: true)
         } else {
-            resolvedURL = path.appendingPathComponent(expandedPath)
+            resolvedURL = path.appendingPathComponent(expandedPath, isDirectory: true)
         }
         
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: resolvedURL.path, isDirectory: &isDirectory), isDirectory.boolValue else {
-            errorMessage = "Path is not a readable folder: \(resolvedURL.path)"
-            return false
-        }
-        
-        path = resolvedURL
+        // The background loader validates directory existence/readability and
+        // reports errors. Path entry must not synchronously probe a remote disk.
         errorMessage = nil
+        if path == resolvedURL {
+            loadFiles()
+        } else {
+            path = resolvedURL
+        }
         return true
     }
     
