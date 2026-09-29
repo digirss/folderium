@@ -26,6 +26,13 @@ class MountedVolumesMainThreadTests(unittest.TestCase):
         self.assertIn("Task.detached", refresher.group(1))
         self.assertRegex(refresher.group(1), r"mountedVolumes\s*=\s*volumes")
 
+    def test_eject_uses_the_unmount_notification_instead_of_duplicate_refresh(self):
+        source = SOURCE.read_text()
+        self.assertIn("NSWorkspace.didUnmountNotification", source)
+        start = source.index("private func unmountVolume(")
+        end = source.index("private func navigateBack(", start)
+        self.assertNotIn("refreshMountedVolumes()", source[start:end])
+
 
 if __name__ == "__main__":
     unittest.main()

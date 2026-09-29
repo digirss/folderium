@@ -1375,7 +1375,6 @@ struct DualPaneView: View {
                 try await FileManager.default.unmountVolume(at: url, options: [])
                 await MainActor.run {
                     refreshTrigger = UUID()
-                    refreshMountedVolumes()
                 }
             } catch {
                 await MainActor.run {
