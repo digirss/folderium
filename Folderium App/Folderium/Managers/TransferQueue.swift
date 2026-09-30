@@ -145,7 +145,8 @@ final class TransferQueue: ObservableObject {
             persistLocked(reason: "pause-request") { _ in }
             Task.detached { [weak self] in
                 guard let self else { return }
-                var confirmed = false
+                // Swift 6: compute into a local let, no captured var mutation.
+                let confirmed: Bool
                 if let jobID {
                     confirmed = RcloneDaemon.shared.requestJobStop(jobID: jobID)
                         && RcloneDaemon.shared.confirmTerminated(jobID: jobID, timeout: 12)
@@ -508,7 +509,7 @@ final class TransferQueue: ObservableObject {
             return Int64(id)
         }
         // 啟動要求已送出但回應遺失/失敗:不得當成「未開始」;比對 job 快照找新作業
-        try? Thread.sleep(forTimeInterval: 0.5)
+        Thread.sleep(forTimeInterval: 0.5)
         let after = try RcloneDaemon.shared.listJobs()
         let newIDs = Set(after.running).union(after.finished).subtracting(beforeIDs)
         if let first = newIDs.sorted().first {
@@ -545,12 +546,13 @@ final class TransferQueue: ObservableObject {
                     try? await Task.sleep(nanoseconds: 500_000_000)
                     let status = RcloneDaemon.shared.jobStatus(jobID: jobID)
                     let stats = RcloneDaemon.shared.stats(forGroup: group)
-                    var stopping = false
-                    await MainActor.run {
+                    // Swift 6: read actor state into a local let, no captured var.
+                    let stopping: Bool = await MainActor.run {
                         self.updateProgress(stats: stats)
                         if let i = self.batches.firstIndex(where: { $0.batchId == batchID }) {
-                            stopping = self.batches[i].state == .stopping
+                            return self.batches[i].state == .stopping
                         }
+                        return false
                     }
                     if status == nil && RcloneDaemon.shared.currentIdentity() == nil {
                         // 引擎程序退出:作業未完成

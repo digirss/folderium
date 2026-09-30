@@ -338,7 +338,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             alert.informativeText = "佇列已由現有實例管理,將切換到該視窗。"
             alert.addButton(withTitle: "好")
             _ = alert.runModal()
-            SingleInstanceGuard.activateExistingInstance()
+            _ = SingleInstanceGuard.activateExistingInstance()
             NSApp.terminate(nil)
             return
         }

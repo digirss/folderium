@@ -278,10 +278,9 @@ final class QuickLookCoordinator: NSObject, QLPreviewPanelDataSource, QLPreviewP
         return false
     }
 
-    func windowDidClose(_ notification: Notification) {
-        if let panel, panel.isVisible {
-            panel.orderOut(nil)
-        }
+    func windowShouldClose(_ sender: NSWindow) -> Bool { // intentional: QL panel hides instead of closing
+        sender.orderOut(nil)
+        return false
     }
 }
 

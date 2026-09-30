@@ -2025,6 +2025,11 @@ struct DualPaneView: View {
             .map { FileMoveEntry(from: $0.from, to: $0.to) }
         guard !entries.isEmpty else { return }
         undoStack.append(FileMoveBatch(title: title, entries: entries))
+        // Bounded history: drop the oldest batches beyond 50 so a long
+        // session cannot grow the stack (and its captured URL lists) forever.
+        if undoStack.count > 50 {
+            undoStack.removeFirst(undoStack.count - 50)
+        }
         redoStack.removeAll()
     }
     
@@ -2033,22 +2038,29 @@ struct DualPaneView: View {
         // File I/O off the main actor: `Task { }` inherits MainActor context
         // and blocked the UI for every moveItem in the loop.
         Task.detached(priority: .userInitiated) {
+            // Swift 6: no captured `var` mutation across concurrency domains;
+            // collect results locally, hop to MainActor once at the end.
             var reversedPairs: [(from: URL, to: URL)] = []
+            var undoFailures: [(String, String)] = []
             for entry in batch.entries.reversed() {
                 do {
                     try FileManager.default.moveItem(at: entry.to, to: entry.from)
                     reversedPairs.append((from: entry.to, to: entry.from))
                 } catch {
-                    await MainActor.run {
-                        FileOperationErrorCenter.shared.report(
-                            title: "復原失敗",
-                            message: "\(entry.to.lastPathComponent): \(error.localizedDescription)")
-                    }
+                    undoFailures.append((entry.to.lastPathComponent, error.localizedDescription))
                 }
             }
-            
+            // Swift 6: vars above must not be captured by the MainActor closure;
+            // snapshot into lets first.
+            let movedBack = reversedPairs
+            let failures = undoFailures
             await MainActor.run {
-                if !reversedPairs.isEmpty {
+                for (name, message) in failures {
+                    FileOperationErrorCenter.shared.report(
+                        title: "復原失敗",
+                        message: "\(name): \(message)")
+                }
+                if !movedBack.isEmpty {
                     redoStack.append(batch)
                     refreshTrigger = UUID()
                 } else {
@@ -2064,22 +2076,28 @@ struct DualPaneView: View {
         // File I/O off the main actor: `Task { }` inherits MainActor context
         // and blocked the UI for every moveItem in the loop.
         Task.detached(priority: .userInitiated) {
+            // Swift 6: no captured `var` mutation across concurrency domains;
+            // collect results locally, hop to MainActor once at the end.
             var reappliedPairs: [(from: URL, to: URL)] = []
+            var redoFailures: [(String, String)] = []
             for entry in batch.entries {
                 do {
                     try FileManager.default.moveItem(at: entry.from, to: entry.to)
                     reappliedPairs.append((from: entry.from, to: entry.to))
                 } catch {
-                    await MainActor.run {
-                        FileOperationErrorCenter.shared.report(
-                            title: "重做失敗",
-                            message: "\(entry.from.lastPathComponent): \(error.localizedDescription)")
-                    }
+                    redoFailures.append((entry.from.lastPathComponent, error.localizedDescription))
                 }
             }
-            
+            // Swift 6: snapshot into lets before the MainActor closure.
+            let reapplied = reappliedPairs
+            let failures = redoFailures
             await MainActor.run {
-                if !reappliedPairs.isEmpty {
+                for (name, message) in failures {
+                    FileOperationErrorCenter.shared.report(
+                        title: "重做失敗",
+                        message: "\(name): \(message)")
+                }
+                if !reapplied.isEmpty {
                     undoStack.append(batch)
                     refreshTrigger = UUID()
                 } else {
@@ -3956,7 +3974,7 @@ struct FilePaneView: View {
             return destinationURL
         }
         
-        let choice = await askDropConflictChoice(sourceURL: sourceURL, destinationURL: destinationURL)
+        let choice = askDropConflictChoice(sourceURL: sourceURL, destinationURL: destinationURL)
         switch choice {
         case .skip:
             return nil

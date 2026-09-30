@@ -173,7 +173,8 @@ struct FileContextMenu: View {
     private func openFile(with applicationURL: URL) {
         let configuration = NSWorkspace.OpenConfiguration()
         NSWorkspace.shared.open([file.url], withApplicationAt: applicationURL, configuration: configuration) { _, error in
-            if let error {
+            guard let error else { return }
+            Task { @MainActor in
                 FileOperationErrorCenter.shared.report(
                     title: "開啟失敗",
                     message: error.localizedDescription)
