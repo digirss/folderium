@@ -475,6 +475,9 @@ struct DualPaneView: View {
     
     // File toolbar customization (Firefox-style): visibility + order + collapse.
     static let fileToolbarStorageKey = "folderium.toolbar.fileRowLayout"
+    /// User-adjustable undo history size (Settings > Undo; default 10).
+    static let undoHistoryLimitKey = "folderium.undoHistoryLimit"
+    static let defaultUndoHistoryLimit = 10
     static let fileToolbarCollapsedKey = "folderium.toolbar.fileRowCollapsed"
     private static let fileToolbarDefaultIDs = [
         "openFolders", "layout", "clipboard", "fileOps", "history",
@@ -2025,10 +2028,13 @@ struct DualPaneView: View {
             .map { FileMoveEntry(from: $0.from, to: $0.to) }
         guard !entries.isEmpty else { return }
         undoStack.append(FileMoveBatch(title: title, entries: entries))
-        // Bounded history: drop the oldest batches beyond 50 so a long
-        // session cannot grow the stack (and its captured URL lists) forever.
-        if undoStack.count > 50 {
-            undoStack.removeFirst(undoStack.count - 50)
+        // Bounded history: drop the oldest batches beyond the user-set limit
+        // (Settings > Undo; default 10) so a long session cannot grow the
+        // stack (and its captured URL lists) forever.
+        let stored = UserDefaults.standard.integer(forKey: Self.undoHistoryLimitKey)
+        let limit = stored > 0 ? stored : Self.defaultUndoHistoryLimit
+        if undoStack.count > limit {
+            undoStack.removeFirst(undoStack.count - limit)
         }
         redoStack.removeAll()
     }

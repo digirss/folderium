@@ -530,6 +530,7 @@ struct SettingsView: View {
     @AppStorage("folderium.softDarkThemeEnabled") private var softDarkThemeEnabled: Bool = false
     @AppStorage("folderium.globalFontSize") private var globalFontSize: Double = 12
     @AppStorage(ShortcutStore.storageKey) private var shortcutsRaw: String = ""
+    @AppStorage(DualPaneView.undoHistoryLimitKey) private var undoHistoryLimit: Int = DualPaneView.defaultUndoHistoryLimit
     @State private var shortcuts: [ShortcutBinding] = ShortcutStore.defaultBindings
     
     var body: some View {
@@ -560,6 +561,24 @@ struct SettingsView: View {
                     }
                     Slider(value: $globalFontSize, in: 11...20, step: 1)
                     Text("Applies a global base font size across the app windows.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("Undo 歷史上限")
+                        Spacer()
+                        Text("\(undoHistoryLimit) 批")
+                            .foregroundColor(.secondary)
+                    }
+                    Slider(value: Binding(
+                        get: { Double(undoHistoryLimit) },
+                        set: { undoHistoryLimit = Int($0) }
+                    ), in: 1...50, step: 1)
+                    Text("上限後自動丟棄最舊的復原紀錄。預設 10。")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
